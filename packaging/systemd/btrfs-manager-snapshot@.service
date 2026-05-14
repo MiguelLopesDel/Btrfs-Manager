@@ -1,0 +1,6 @@
+[Unit]
+Description=Btrfs Manager snapshot policy for %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/btrfs-manager/btrfs-manager-helper run-retention-policy --policy-id %i

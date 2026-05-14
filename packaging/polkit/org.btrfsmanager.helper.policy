@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>Btrfs Manager</vendor>
+  <vendor_url>https://example.invalid/btrfs-manager</vendor_url>
+  <action id="org.btrfsmanager.helper.discovery">
+    <description>Inspect Btrfs filesystems and subvolumes</description>
+    <message>Authentication is required to inspect Btrfs filesystems.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+  <action id="org.btrfsmanager.helper.snapshot">
+    <description>Manage Btrfs snapshots</description>
+    <message>Authentication is required to create, delete, or modify Btrfs snapshots.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+  <action id="org.btrfsmanager.helper.mount">
+    <description>Mount Btrfs snapshots for browsing</description>
+    <message>Authentication is required to mount or unmount Btrfs snapshot browse views.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+  <action id="org.btrfsmanager.helper.rollback">
+    <description>Prepare Btrfs rollback operations</description>
+    <message>Authentication is required to prepare a Btrfs rollback.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+  <action id="org.btrfsmanager.helper.policy">
+    <description>Run Btrfs snapshot policies</description>
+    <message>Authentication is required to run Btrfs snapshot policies.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

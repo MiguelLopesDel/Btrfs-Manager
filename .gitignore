@@ -1,0 +1,10 @@
+/target/
+/.cache/
+.env
+/skills/
+*.sqlite
+*.db
+/quality/report.json
+/quality/jscpd/
+lcov.info
+mutation-report/

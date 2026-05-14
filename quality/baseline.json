@@ -1,0 +1,208 @@
+{
+  "metrics": {
+    "duplication": {
+      "duplicate_blocks": 6,
+      "duplicate_ratio_percent": 0.1754,
+      "duplicate_windows": 6,
+      "total_windows": 3421,
+      "window_size": 8
+    },
+    "line_coverage_percent": 46.0445,
+    "max_file_lines": 1513,
+    "max_function_complexity": 55,
+    "max_function_lines": 254,
+    "rust_file_count": 13,
+    "rust_function_count": 147,
+    "rust_logical_lines": 3512,
+    "rust_total_lines": 3791
+  },
+  "schema": 1,
+  "top": {
+    "largest_files": [
+      {
+        "file": "crates/helper/src/lib.rs",
+        "lines": 1513
+      },
+      {
+        "file": "crates/app/src/gui.rs",
+        "lines": 1237
+      },
+      {
+        "file": "crates/core/src/models.rs",
+        "lines": 201
+      },
+      {
+        "file": "crates/helper/src/dbus.rs",
+        "lines": 165
+      },
+      {
+        "file": "crates/helper/src/main.rs",
+        "lines": 143
+      },
+      {
+        "file": "crates/core/src/retention.rs",
+        "lines": 121
+      },
+      {
+        "file": "crates/core/src/parser.rs",
+        "lines": 114
+      },
+      {
+        "file": "crates/core/src/compare.rs",
+        "lines": 77
+      },
+      {
+        "file": "crates/app/src/dbus_client.rs",
+        "lines": 65
+      },
+      {
+        "file": "crates/app/src/main.rs",
+        "lines": 62
+      }
+    ],
+    "longest_functions": [
+      {
+        "complexity": 15,
+        "file": "crates/app/src/gui.rs",
+        "line": 910,
+        "lines": 254,
+        "name": "open_policy_dialog"
+      },
+      {
+        "complexity": 55,
+        "file": "crates/helper/src/lib.rs",
+        "line": 151,
+        "lines": 228,
+        "name": "handle"
+      },
+      {
+        "complexity": 7,
+        "file": "crates/app/src/gui.rs",
+        "line": 53,
+        "lines": 197,
+        "name": "build_ui"
+      },
+      {
+        "complexity": 7,
+        "file": "crates/app/src/gui.rs",
+        "line": 642,
+        "lines": 154,
+        "name": "render_inventory"
+      },
+      {
+        "complexity": 5,
+        "file": "crates/app/src/gui.rs",
+        "line": 412,
+        "lines": 71,
+        "name": "append_helper_cli_args"
+      },
+      {
+        "complexity": 20,
+        "file": "crates/helper/src/lib.rs",
+        "line": 539,
+        "lines": 69,
+        "name": "run_retention_policy_inner"
+      },
+      {
+        "complexity": 8,
+        "file": "crates/helper/src/lib.rs",
+        "line": 418,
+        "lines": 64,
+        "name": "discover_filesystems"
+      },
+      {
+        "complexity": 12,
+        "file": "crates/helper/src/main.rs",
+        "line": 75,
+        "lines": 61,
+        "name": "main"
+      },
+      {
+        "complexity": 8,
+        "file": "crates/app/src/gui.rs",
+        "line": 251,
+        "lines": 59,
+        "name": "discover_and_load"
+      },
+      {
+        "complexity": 5,
+        "file": "crates/helper/src/lib.rs",
+        "line": 672,
+        "lines": 54,
+        "name": "migrate"
+      }
+    ],
+    "most_complex_functions": [
+      {
+        "complexity": 55,
+        "file": "crates/helper/src/lib.rs",
+        "line": 151,
+        "lines": 228,
+        "name": "handle"
+      },
+      {
+        "complexity": 20,
+        "file": "crates/helper/src/lib.rs",
+        "line": 539,
+        "lines": 69,
+        "name": "run_retention_policy_inner"
+      },
+      {
+        "complexity": 16,
+        "file": "crates/helper/src/lib.rs",
+        "line": 861,
+        "lines": 27,
+        "name": "policy_from_row"
+      },
+      {
+        "complexity": 15,
+        "file": "crates/app/src/gui.rs",
+        "line": 910,
+        "lines": 254,
+        "name": "open_policy_dialog"
+      },
+      {
+        "complexity": 14,
+        "file": "crates/helper/src/lib.rs",
+        "line": 914,
+        "lines": 25,
+        "name": "policy_log_from_row"
+      },
+      {
+        "complexity": 14,
+        "file": "crates/helper/src/lib.rs",
+        "line": 748,
+        "lines": 22,
+        "name": "upsert_policy"
+      },
+      {
+        "complexity": 12,
+        "file": "crates/helper/src/main.rs",
+        "line": 75,
+        "lines": 61,
+        "name": "main"
+      },
+      {
+        "complexity": 11,
+        "file": "crates/helper/src/lib.rs",
+        "line": 609,
+        "lines": 45,
+        "name": "write_systemd_policy_units"
+      },
+      {
+        "complexity": 11,
+        "file": "crates/app/src/gui.rs",
+        "line": 369,
+        "lines": 35,
+        "name": "handle_privileged"
+      },
+      {
+        "complexity": 11,
+        "file": "crates/helper/src/lib.rs",
+        "line": 889,
+        "lines": 24,
+        "name": "snapshot_from_row"
+      }
+    ]
+  }
+}

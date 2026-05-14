@@ -1,0 +1,31 @@
+# Maintainer: Btrfs Manager contributors
+pkgname=btrfs-manager-git
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Modern desktop manager for Btrfs subvolumes and snapshots"
+arch=('x86_64')
+url="https://example.invalid/btrfs-manager"
+license=('GPL-3.0-or-later')
+depends=('btrfs-progs' 'gtk4' 'libadwaita' 'polkit' 'systemd' 'xdg-utils')
+makedepends=('rust' 'cargo' 'git')
+optdepends=('grub-btrfs: GRUB snapshot boot integration'
+            'refind-btrfs: rEFInd snapshot boot integration')
+source=('git+https://example.invalid/btrfs-manager.git')
+sha256sums=('SKIP')
+
+build() {
+  cd btrfs-manager
+  cargo build --release -p btrfs-manager-helper -p btrfs-manager-app --features btrfs-manager-app/gui
+}
+
+package() {
+  cd btrfs-manager
+  install -Dm755 target/release/btrfs-manager-app "$pkgdir/usr/bin/btrfs-manager-app"
+  install -Dm755 target/release/btrfs-manager-helper "$pkgdir/usr/lib/btrfs-manager/btrfs-manager-helper"
+  install -Dm644 packaging/linux/org.btrfsmanager.App.desktop "$pkgdir/usr/share/applications/org.btrfsmanager.App.desktop"
+  install -Dm644 packaging/dbus/org.btrfsmanager.Helper.conf "$pkgdir/usr/share/dbus-1/system.d/org.btrfsmanager.Helper.conf"
+  install -Dm644 packaging/dbus/org.btrfsmanager.Helper.service "$pkgdir/usr/share/dbus-1/system-services/org.btrfsmanager.Helper.service"
+  install -Dm644 packaging/polkit/org.btrfsmanager.helper.policy "$pkgdir/usr/share/polkit-1/actions/org.btrfsmanager.helper.policy"
+  install -Dm644 packaging/systemd/btrfs-manager-snapshot@.service "$pkgdir/usr/lib/systemd/system/btrfs-manager-snapshot@.service"
+  install -Dm644 packaging/systemd/btrfs-manager-snapshot@.timer "$pkgdir/usr/lib/systemd/system/btrfs-manager-snapshot@.timer"
+}

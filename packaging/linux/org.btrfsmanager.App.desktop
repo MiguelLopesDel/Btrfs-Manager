@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Btrfs Manager
+Comment=Manage Btrfs subvolumes and snapshots
+Exec=btrfs-manager-app
+Icon=org.btrfsmanager.App
+Terminal=false
+Categories=System;Filesystem;GTK;

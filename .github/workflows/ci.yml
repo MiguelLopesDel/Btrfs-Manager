@@ -1,0 +1,223 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  lint:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+
+  lint-gui:
+    name: Clippy GUI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install GTK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libgraphene-1.0-dev \
+            pkg-config
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p btrfs-manager-app --features gui --all-targets -- -D warnings
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-targets --no-default-features
+
+  gui-check:
+    name: GUI Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GTK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libgraphene-1.0-dev \
+            pkg-config
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p btrfs-manager-app --features gui
+
+  integration-btrfs:
+    name: Loopback Btrfs Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Btrfs dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends btrfs-progs
+      - uses: Swatinem/rust-cache@v2
+      - run: bash scripts/dev-loopback-btrfs-test.sh
+
+  security:
+    name: Dependency Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check
+
+  coverage:
+    name: Coverage Ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo llvm-cov --workspace --no-default-features --fail-under-lines 46 --lcov --output-path lcov.info
+      - run: python3 scripts/quality-gate.py check --write-report --lcov lcov.info
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+
+  quality-ratchet:
+    name: Complexity And Duplication Ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/quality-gate.py check --write-report
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Generate duplication report
+        run: npx --yes jscpd@4.0.5
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-report
+          path: |
+            quality/report.json
+            quality/jscpd
+
+  tdd-regression:
+    name: TDD Regression Evidence
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: git fetch origin "${{ github.base_ref }}:${{ github.base_ref }}"
+      - run: python3 scripts/quality-gate.py tdd-check --base "${{ github.base_ref }}"
+
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: DavidAnson/markdownlint-cli2-action@v18
+        with:
+          globs: |
+            README.md
+            docs/**/*.md
+      - run: cargo doc --workspace --no-deps --no-default-features
+
+  docs-gui:
+    name: GUI Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GTK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libgraphene-1.0-dev \
+            pkg-config
+      - run: cargo doc -p btrfs-manager-app --features gui --no-deps
+
+  shell-and-packaging:
+    name: Shell And Packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck libxml2-utils desktop-file-utils
+      - run: shellcheck scripts/dev-loopback-btrfs-test.sh scripts/vm-arch-bootstrap.sh scripts/copy-last-screenshot
+      - run: shellcheck scripts/e2e-headless-smoke.sh scripts/github-bootstrap.sh
+      - run: xmllint --noout packaging/polkit/org.btrfsmanager.helper.policy
+      - run: desktop-file-validate packaging/linux/org.btrfsmanager.App.desktop
+
+  e2e-headless:
+    name: Headless GUI E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GUI test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb \
+            xauth \
+            dbus-x11 \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libgraphene-1.0-dev \
+            pkg-config
+      - uses: Swatinem/rust-cache@v2
+      - run: bash scripts/e2e-headless-smoke.sh

@@ -1,0 +1,695 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Documentação Técnica do Btrfs Manager</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d10;
+      --panel: #12161d;
+      --panel-2: #171c24;
+      --panel-3: #1d2430;
+      --text: #edf2f7;
+      --muted: #9aa7b7;
+      --line: #283241;
+      --accent: #62d2a2;
+      --accent-2: #73a7ff;
+      --warn: #f2c36b;
+      --danger: #ff7b8a;
+      --ok: #66e0a3;
+      --shadow: 0 18px 50px rgba(0, 0, 0, .35);
+      --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 20% 0%, rgba(98, 210, 162, .12), transparent 30%),
+        radial-gradient(circle at 85% 12%, rgba(115, 167, 255, .10), transparent 34%),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      line-height: 1.5;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 290px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 22px 18px;
+      border-right: 1px solid var(--line);
+      background: rgba(11, 13, 16, .88);
+      backdrop-filter: blur(18px);
+      overflow-y: auto;
+    }
+
+    .brand {
+      display: grid;
+      gap: 6px;
+      padding: 10px 10px 20px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 18px;
+    }
+
+    .brand strong {
+      font-size: 1.05rem;
+      letter-spacing: .02em;
+    }
+
+    .brand span, .nav-meta {
+      color: var(--muted);
+      font-size: .84rem;
+    }
+
+    nav {
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      color: var(--muted);
+      text-decoration: none;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      transition: .18s ease;
+    }
+
+    .nav-link:hover, .nav-link.active {
+      color: var(--text);
+      background: var(--panel-2);
+      border-color: var(--line);
+    }
+
+    main {
+      padding: 30px;
+      max-width: 1380px;
+      width: 100%;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(310px, .65fr);
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, rgba(23, 28, 36, .96), rgba(18, 22, 29, .96));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero-card {
+      padding: 24px;
+    }
+
+    h1, h2, h3 {
+      line-height: 1.16;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 4vw, 4rem);
+      max-width: 820px;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      font-size: clamp(1.45rem, 2.2vw, 2.05rem);
+      margin-bottom: 14px;
+    }
+
+    h3 {
+      font-size: 1.05rem;
+      margin-bottom: 8px;
+    }
+
+    p {
+      color: var(--muted);
+      margin: 8px 0 0;
+    }
+
+    .kicker {
+      color: var(--accent);
+      font: 700 .78rem var(--mono);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 12px;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      padding: 14px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 1.55rem;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: .82rem;
+    }
+
+    section {
+      display: none;
+      padding: 22px;
+      margin: 18px 0;
+    }
+
+    section.active {
+      display: block;
+      animation: fadeIn .18s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .module {
+      padding: 16px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .module .tag, .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(98, 210, 162, .12);
+      color: var(--accent);
+      font: 700 .72rem var(--mono);
+      margin-bottom: 10px;
+    }
+
+    .pill.blue { background: rgba(115, 167, 255, .12); color: var(--accent-2); }
+    .pill.warn { background: rgba(242, 195, 107, .13); color: var(--warn); }
+    .pill.danger { background: rgba(255, 123, 138, .12); color: var(--danger); }
+
+    .tree {
+      font-family: var(--mono);
+      white-space: pre-wrap;
+      color: #d7dee8;
+      background: #0d1117;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      overflow-x: auto;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+      counter-reset: step;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 46px minmax(0, 1fr);
+      gap: 12px;
+      padding: 14px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .step::before {
+      counter-increment: step;
+      content: counter(step);
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: rgba(115, 167, 255, .14);
+      color: var(--accent-2);
+      font: 800 .9rem var(--mono);
+    }
+
+    pre {
+      position: relative;
+      margin: 14px 0 0;
+      padding: 16px;
+      overflow-x: auto;
+      background: #0a0f15;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    code {
+      font-family: var(--mono);
+      color: #dce7f4;
+      font-size: .88rem;
+    }
+
+    .copy {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      border: 1px solid var(--line);
+      background: var(--panel-3);
+      color: var(--text);
+      border-radius: 7px;
+      padding: 6px 8px;
+      cursor: pointer;
+      font: 700 .75rem var(--mono);
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin: 12px 0;
+      flex-wrap: wrap;
+    }
+
+    input, select {
+      min-height: 38px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #0c1118;
+      color: var(--text);
+      padding: 8px 10px;
+      font: inherit;
+    }
+
+    input { min-width: min(420px, 100%); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+    }
+
+    th, td {
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+      color: var(--muted);
+    }
+
+    th {
+      color: var(--text);
+      background: var(--panel-3);
+      font-size: .82rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+
+    td:first-child {
+      color: var(--text);
+      font-family: var(--mono);
+      white-space: nowrap;
+    }
+
+    .decision {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 12px;
+      align-items: center;
+      margin-top: 14px;
+    }
+
+    .arrow {
+      color: var(--accent-2);
+      font: 800 1.3rem var(--mono);
+    }
+
+    details {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+
+    details + details { margin-top: 10px; }
+    summary { cursor: pointer; color: var(--text); font-weight: 700; }
+
+    .status-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 10px 12px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .status-row span:last-child {
+      color: var(--ok);
+      font-family: var(--mono);
+      white-space: nowrap;
+    }
+
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      aside {
+        position: static;
+        height: auto;
+      }
+      nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      main { padding: 18px; }
+      .hero, .grid, .grid.two, .decision { grid-template-columns: 1fr; }
+      .arrow { display: none; }
+    }
+
+    @media (max-width: 560px) {
+      nav { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: 1fr; }
+      table { font-size: .86rem; }
+      th, td { padding: 9px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <div class="brand">
+        <strong>Btrfs Manager</strong>
+        <span>Painel de Documentação Técnica</span>
+        <span class="nav-meta">Rust · GTK4/libadwaita · Btrfs · Polkit</span>
+      </div>
+      <nav aria-label="Seções da documentação">
+        <a class="nav-link active" href="#overview" data-section="overview">Arquitetura <span>01</span></a>
+        <a class="nav-link" href="#flow" data-section="flow">Fluxo de Dados <span>02</span></a>
+        <a class="nav-link" href="#brain" data-section="brain">Lógica de Decisão <span>03</span></a>
+        <a class="nav-link" href="#commands" data-section="commands">Comandos <span>04</span></a>
+        <a class="nav-link" href="#quality" data-section="quality">Qualidade <span>05</span></a>
+        <a class="nav-link" href="#troubleshooting" data-section="troubleshooting">Problemas <span>06</span></a>
+      </nav>
+    </aside>
+
+    <main>
+      <div class="hero">
+        <div class="card hero-card">
+          <div class="kicker">Resumo do sistema</div>
+          <h1>Painel desktop moderno para snapshots e subvolumes Btrfs.</h1>
+          <p>O Btrfs Manager é dividido em uma aplicação GTK/libadwaita sem privilégio, um helper privilegiado estreito e uma crate Rust compartilhada de domínio. O objetivo arquitetural é segurança operacional: descobrir corretamente, navegar em modo somente leitura, não modificar snapshots externos e manter rollback reversível.</p>
+        </div>
+        <div class="card hero-card">
+          <div class="metrics">
+            <div class="metric"><strong>3</strong><span>Crates Rust: core, helper e app</span></div>
+            <div class="metric"><strong>10</strong><span>Fases acompanhadas no roadmap</span></div>
+            <div class="metric"><strong>14</strong><span>Gates de qualidade no CI</span></div>
+            <div class="metric"><strong>RO</strong><span>Snapshots montados como somente leitura por padrão</span></div>
+          </div>
+        </div>
+      </div>
+
+      <section id="overview" class="card active">
+        <div class="kicker">01 · Visão Geral da Arquitetura</div>
+        <h2>Estrutura, responsabilidades e fronteiras</h2>
+        <p>A arquitetura gira em torno da fronteira de privilégio. Em builds instalados, a GUI fala com o helper pelo system bus (`org.btrfsmanager.Helper`) e o helper autoriza cada `HelperRequest` via Polkit antes de executar operações Btrfs.</p>
+        <div class="grid">
+          <div class="module">
+            <span class="tag">crates/core</span>
+            <h3>Domínio puro</h3>
+            <p>Modelos, parsing de outputs, path safety, retenção, comparação e plano de rollback. Não conhece GTK nem Polkit.</p>
+          </div>
+          <div class="module">
+            <span class="tag">crates/helper</span>
+            <h3>Fronteira privilegiada</h3>
+            <p>Executa operações Btrfs e mount/umount com validação de paths, API estreita baseada em `HelperRequest`, serviço D-Bus e ações Polkit por classe operacional.</p>
+          </div>
+          <div class="module">
+            <span class="tag">crates/app</span>
+            <h3>Experiência desktop</h3>
+            <p>GUI GTK/libadwaita, busca, inventário, browse de snapshots, toasts de erro e chamada ao helper.</p>
+          </div>
+        </div>
+        <pre><button class="copy">Copiar</button><code>BtrfsManager/
+├── crates/
+│   ├── core/      # modelos, parser, retenção, comparação, rollback, paths seguros
+│   ├── helper/    # fronteira privilegiada CLI/API
+│   └── app/       # shell CLI e GUI GTK/libadwaita
+├── docs/          # roadmap, arquitetura, qualidade e este painel
+├── scripts/       # integração loopback, bootstrap de VM, helper de screenshot
+├── packaging/     # Arch PKGBUILD, desktop file, D-Bus, Polkit, systemd units
+├── migrations/    # estado SQLite versionado
+├── po/            # recursos JSON de i18n
+└── .github/       # CI, CodeQL, PR review policy</code></pre>
+      </section>
+
+      <section id="flow" class="card">
+        <div class="kicker">02 · Fluxo de Dados e Ciclo de Vida</div>
+        <h2>Do evento da interface ao resultado operacional</h2>
+        <div class="timeline">
+          <div class="step"><div><h3>Aplicação inicia</h3><p>A GUI cria `UiState`, `ToastOverlay`, seletor de filesystem e lista principal. Se existem mounts gerenciados antigos, tenta cleanup seguro.</p></div></div>
+          <div class="step"><div><h3>Discovery autorizado</h3><p>`DiscoverFilesystems` passa pelo helper D-Bus quando instalado; a ação Polkit de discovery permite sessão ativa sem senha. Em desenvolvimento, há fallback local.</p></div></div>
+          <div class="step"><div><h3>Inventário</h3><p>`ListSubvolumes` executa `btrfs subvolume list -u`, parseia linhas, classifica cada subvolume e retorna `SubvolumeInventory` estruturado.</p></div></div>
+          <div class="step"><div><h3>Renderização</h3><p>A GUI separa `Snapshot`/`ExternalSnapshot` de `Normal`/`SnapshotContainer`, mostrando `@snapshots` como container e snapshots reais na seção de snapshots.</p></div></div>
+          <div class="step"><div><h3>Browse read-only</h3><p>Ao abrir snapshot, resolve path direto ou monta top-level `subvolid=5`, cria bind mount read-only e abre o path com `xdg-open`.</p></div></div>
+          <div class="step"><div><h3>Feedback e cleanup</h3><p>Toasts mostram sucesso/erro; a row muda para estado montado; o usuário pode desmontar explicitamente.</p></div></div>
+        </div>
+        <pre><button class="copy">Copiar</button><code>Evento da GUI
+  -> HelperRequest
+  -> D-Bus org.btrfsmanager.Helper quando instalado
+  -> autorização Polkit por classe de ação
+  -> fallback de desenvolvimento: local ou pkexec/helper
+  -> parser/modelos do core classificam os dados
+  -> SubvolumeInventory JSON
+  -> linhas e ações na lista GTK</code></pre>
+      </section>
+
+      <section id="brain" class="card">
+        <div class="kicker">03 · Cérebro e Lógica de Decisão</div>
+        <h2>Regras que protegem o sistema</h2>
+        <div class="decision">
+          <div class="module">
+            <span class="pill">Classificação</span>
+            <h3>SubvolumeKind</h3>
+            <p>`Normal`, `SnapshotContainer`, `Snapshot` e `ExternalSnapshot`. Essa classificação substitui heurísticas duplicadas na GUI.</p>
+          </div>
+          <div class="arrow">→</div>
+          <div class="module">
+            <span class="pill blue">Renderização</span>
+            <h3>Seções corretas</h3>
+            <p>Containers como `@snapshots` ficam em Subvolumes. Paths como `@snapshots/296/snapshot` entram em Snapshots.</p>
+          </div>
+        </div>
+        <div class="grid two">
+          <div class="module">
+            <span class="pill warn">Privilégio</span>
+            <h3>Quando pede senha</h3>
+            <p>Discovery/listagem usam ação Polkit sem senha para sessão ativa. Mount, umount, create/delete, readonly toggle, policy e rollback usam classes Polkit próprias e podem pedir autenticação administrativa.</p>
+          </div>
+          <div class="module">
+            <span class="pill danger">Segurança</span>
+            <h3>Paths seguros</h3>
+            <p>Paths precisam ser absolutos e sem traversal. Cleanup só aceita roots gerenciados em `/tmp/btrfs-manager-*` ou `/run/user/&lt;uid&gt;/btrfs-manager`.</p>
+          </div>
+        </div>
+        <pre><button class="copy">Copiar</button><code>if path is "@snapshots" or ".snapshots":
+    kind = SnapshotContainer
+else if path contains "timeshift" or "snapper":
+    kind = ExternalSnapshot(tool)
+else if path contains "snapshots/" or ends with "/snapshot":
+    kind = Snapshot
+else:
+    kind = Normal</code></pre>
+      </section>
+
+      <section id="commands" class="card">
+        <div class="kicker">04 · Manual de Comandos Internos</div>
+        <h2>CLI, flags e parâmetros</h2>
+        <div class="toolbar">
+          <input id="commandSearch" type="search" placeholder="Filtrar comandos, flags, crates, finalidade...">
+          <select id="commandKind">
+            <option value="all">Todos os grupos</option>
+            <option value="helper">Helper</option>
+            <option value="app">App</option>
+            <option value="dev">Dev/Test</option>
+          </select>
+        </div>
+        <table id="commandsTable">
+          <thead>
+            <tr><th>Comando</th><th>Grupo</th><th>Parâmetros</th><th>Finalidade</th></tr>
+          </thead>
+          <tbody>
+            <tr data-kind="helper"><td>btrfs-manager-helper discover-filesystems</td><td>helper</td><td>nenhum</td><td>Descobre filesystems Btrfs montados com UUID, dispositivos, mountpoints e subvolume padrão.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper list-subvolumes &lt;mountpoint&gt;</td><td>helper</td><td>mountpoint absoluto</td><td>Lista subvolumes e retorna inventário estruturado com classificação.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper create-snapshot [--readonly] &lt;source&gt; &lt;destination&gt;</td><td>helper</td><td>`--readonly` é true por padrão</td><td>Cria snapshot Btrfs como somente leitura por padrão.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper delete-snapshot &lt;path&gt;</td><td>helper</td><td>path absoluto do snapshot</td><td>Remove snapshot após validação de path.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper set-readonly &lt;path&gt; &lt;bool&gt;</td><td>helper</td><td>true, false, 1, 0, yes, no, on, off</td><td>Alterna a propriedade Btrfs `ro` para fluxos de lock/unlock.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper mount-snapshot &lt;source&gt; &lt;target&gt;</td><td>helper</td><td>source e target absolutos</td><td>Faz bind mount do snapshot e remonta o bind como somente leitura.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper mount-top-level &lt;mountpoint&gt; &lt;target&gt;</td><td>helper</td><td>mountpoint ativo, diretório target</td><td>Monta o top-level do filesystem com `ro,subvolid=5` para resolver snapshots escondidos.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper unmount-snapshot &lt;target&gt;</td><td>helper</td><td>target gerenciado</td><td>Desmonta mount temporário de browse/top-level.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper cleanup-managed-mounts</td><td>helper</td><td>alias: cleanup-managed-mount</td><td>Desmonta mounts temporários gerenciados.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper list-snapshot-policies</td><td>helper</td><td>nenhum</td><td>Lista políticas persistidas de snapshots agendados.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper upsert-snapshot-policy --json &lt;policy&gt;</td><td>helper</td><td>JSON de SnapshotPolicy</td><td>Salva estado da política e escreve/habilita o timer systemd correspondente.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper preview-retention &lt;policy-id&gt;</td><td>helper</td><td>UUID</td><td>Mostra snapshots gerenciados que seriam mantidos ou removidos.</td></tr>
+            <tr data-kind="helper"><td>btrfs-manager-helper run-retention-policy --policy-id &lt;uuid&gt;</td><td>helper</td><td>UUID</td><td>Cria snapshot agendado somente leitura, aplica retenção e registra log.</td></tr>
+            <tr data-kind="app"><td>btrfs-manager-app list --mountpoint &lt;path&gt;</td><td>app</td><td>`--mountpoint` obrigatório</td><td>Shell não-GUI para imprimir inventário JSON.</td></tr>
+            <tr data-kind="app"><td>cargo run -p btrfs-manager-app --features gui</td><td>app</td><td>pacotes dev GTK4/libadwaita</td><td>Executa a aplicação desktop.</td></tr>
+            <tr data-kind="dev"><td>BTRFS_MANAGER_MOUNTPOINT=/mnt/test cargo run -p btrfs-manager-app --features gui</td><td>dev</td><td>override por ambiente</td><td>Força inventário da GUI para mountpoint loopback/teste.</td></tr>
+            <tr data-kind="dev"><td>bash scripts/dev-loopback-btrfs-test.sh</td><td>dev</td><td>usa sudo internamente</td><td>Cria imagem Btrfs descartável e verifica snapshot, readonly, browse e top-level.</td></tr>
+            <tr data-kind="dev"><td>scripts/copy-last-screenshot</td><td>dev</td><td>screenshots Caelestia em /tmp</td><td>Mantém o screenshot mais recente disponível como image/png no clipboard.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="quality" class="card">
+        <div class="kicker">05 · Quality Gates e Manutenibilidade</div>
+        <h2>Como impedir degradação</h2>
+        <div class="status-list">
+          <div class="status-row"><span>Rustfmt</span><span>bloqueante</span></div>
+          <div class="status-row"><span>Clippy sem GUI e com GUI</span><span>-D warnings</span></div>
+          <div class="status-row"><span>Testes unitários</span><span>workspace</span></div>
+          <div class="status-row"><span>Integração Btrfs loopback</span><span>comportamento real de filesystem</span></div>
+          <div class="status-row"><span>cargo-deny</span><span>segurança/licenças</span></div>
+          <div class="status-row"><span>Cobertura</span><span>baseline ratchet de 46.0445%</span></div>
+          <div class="status-row"><span>markdownlint, shellcheck, validadores XML/desktop</span><span>CI</span></div>
+        </div>
+        <pre><button class="copy">Copiar</button><code>cargo fmt --all --check
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo clippy -p btrfs-manager-app --features gui --all-targets -- -D warnings
+cargo test --workspace --all-targets --no-default-features
+bash scripts/dev-loopback-btrfs-test.sh
+cargo deny check
+cargo llvm-cov --workspace --no-default-features --fail-under-lines 46</code></pre>
+        <div class="grid two">
+          <div class="module">
+            <span class="pill">Regra de review</span>
+            <h3>Arquitetura antes de sintaxe</h3>
+            <p>PRs devem explicar risco, testes, impacto em helper privilegiado, validação de paths, snapshots/rollback e screenshots quando tocar GUI.</p>
+          </div>
+          <div class="module">
+            <span class="pill blue">Regra de regressão</span>
+            <h3>Bug fix precisa de teste</h3>
+            <p>Todo bug corrigido deve ganhar teste unitário, fixture ou cenário loopback que falharia antes da correção.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="troubleshooting" class="card">
+        <div class="kicker">06 · Guia de Troubleshooting</div>
+        <h2>Causa e efeito dos erros comuns</h2>
+        <details open>
+          <summary>Polkit pede senha várias vezes ao abrir ou atualizar</summary>
+          <p><strong>Causa:</strong> fallback antigo por `pkexec` ou serviço D-Bus/Polkit não instalado corretamente. <strong>Correção atual:</strong> em builds instalados, discovery/listagem usam D-Bus com ação Polkit sem senha para sessão ativa; prompts devem aparecer apenas em mount/unmount/create/delete/toggle/policy/rollback.</p>
+        </details>
+        <details>
+          <summary>Discovery failed: Operation not permitted ao listar `/`</summary>
+          <p><strong>Causa:</strong> em alguns hosts, `btrfs subvolume list /` exige privilégio mesmo para leitura. <strong>Correção atual:</strong> a GUI tenta listagem local apenas como otimização; se falhar, continua para D-Bus/Polkit ou `pkexec` em vez de mostrar o erro diretamente.</p>
+        </details>
+        <details>
+          <summary>missing field `kind` ao carregar inventário</summary>
+          <p><strong>Causa:</strong> GUI nova lendo JSON de helper antigo sem `SubvolumeKind`. <strong>Correção atual:</strong> desserialização usa `SubvolumeKind::Normal` como default para inventários antigos.</p>
+        </details>
+        <details>
+          <summary>snapshot path is not accessible from current mountpoint</summary>
+          <p><strong>Causa:</strong> `/` pode estar montado como `subvol=@`, enquanto `btrfs subvolume list /` retorna caminhos relativos ao top-level. <strong>Correção:</strong> montar top-level read-only com `subvolid=5` e resolver o snapshot lá.</p>
+        </details>
+        <details>
+          <summary>command failed: mount ["-o", "ro,subvolid=5", "..."]</summary>
+          <p><strong>Causa:</strong> source de `findmnt` pode vir como `/dev/mapper/cryptroot[/@]`; helper normaliza removendo sufixo `[/@]`. Se persistir, olhar stderr completo incluído em `HelperError::CommandFailed`.</p>
+        </details>
+        <details>
+          <summary>Temporary mounts aparecem no lsblk</summary>
+          <p><strong>Causa:</strong> browse/top-level mounts ficam vivos enquanto a janela está aberta. <strong>Correção:</strong> fechar a GUI desmonta os mounts da sessão; botão eject ou `sudo target/debug/btrfs-manager-helper cleanup-managed-mounts` fazem cleanup global.</p>
+        </details>
+        <details>
+          <summary>cargo check --features gui falha em gtk4.pc ou graphene-gobject-1.0.pc</summary>
+          <p><strong>Causa:</strong> faltam pacotes nativos de desenvolvimento. No Debian/Ubuntu: `libgtk-4-dev libadwaita-1-dev libgraphene-1.0-dev pkg-config`. No Arch: `gtk4 libadwaita graphene pkgconf`.</p>
+        </details>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const links = [...document.querySelectorAll(".nav-link")];
+    const sections = [...document.querySelectorAll("main section")];
+    const activate = id => {
+      sections.forEach(section => section.classList.toggle("active", section.id === id));
+      links.forEach(link => link.classList.toggle("active", link.dataset.section === id));
+      history.replaceState(null, "", "#" + id);
+    };
+    links.forEach(link => link.addEventListener("click", event => {
+      event.preventDefault();
+      activate(link.dataset.section);
+    }));
+    if (location.hash && document.querySelector(location.hash)) {
+      activate(location.hash.slice(1));
+    }
+
+    document.querySelectorAll("pre").forEach(pre => {
+      const button = pre.querySelector(".copy");
+      if (!button) return;
+      button.addEventListener("click", async () => {
+        const code = pre.querySelector("code").innerText;
+        await navigator.clipboard.writeText(code);
+        button.textContent = "Copiado";
+        setTimeout(() => button.textContent = "Copiar", 900);
+      });
+    });
+
+    const search = document.getElementById("commandSearch");
+    const kind = document.getElementById("commandKind");
+    const rows = [...document.querySelectorAll("#commandsTable tbody tr")];
+    const filterCommands = () => {
+      const q = search.value.trim().toLowerCase();
+      const k = kind.value;
+      rows.forEach(row => {
+        const matchesText = row.innerText.toLowerCase().includes(q);
+        const matchesKind = k === "all" || row.dataset.kind === k;
+        row.style.display = matchesText && matchesKind ? "" : "none";
+      });
+    };
+    search.addEventListener("input", filterCommands);
+    kind.addEventListener("change", filterCommands);
+  </script>
+</body>
+</html>

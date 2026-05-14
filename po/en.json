@@ -1,0 +1,13 @@
+{
+  "app.name": "Btrfs Manager",
+  "snapshots.title": "Snapshots",
+  "snapshots.search": "Search snapshots",
+  "snapshots.empty": "No snapshots loaded",
+  "action.refresh": "Refresh",
+  "action.create_snapshot": "Create snapshot",
+  "action.compare": "Compare",
+  "action.browse": "Browse read-only",
+  "action.rollback": "Prepare rollback",
+  "action.unlock_snapshot": "Unlock snapshot",
+  "warning.unlock_snapshot": "Unlocking a snapshot makes it writable and can break incremental backup assumptions."
+}

@@ -1,0 +1,15 @@
+title = "Btrfs Manager secret scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Project fixtures and documentation examples"
+paths = [
+  '''Cargo.lock''',
+  '''docs/technical-documentation.html''',
+]
+regexes = [
+  '''example\.invalid''',
+  '''org\.btrfsmanager''',
+]

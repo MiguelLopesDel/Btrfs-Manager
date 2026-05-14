@@ -1,0 +1,27 @@
+name: CodeQL
+
+on:
+  pull_request:
+    paths:
+      - "**/*.rs"
+      - "**/*.sh"
+      - ".github/workflows/**"
+  schedule:
+    - cron: "22 3 * * 1"
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+          build-mode: none
+      - uses: github/codeql-action/analyze@v3

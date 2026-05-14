@@ -1,0 +1,19 @@
+[package]
+name = "btrfs-manager-helper"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+btrfs-manager-core = { path = "../core" }
+chrono.workspace = true
+clap.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+zbus.workspace = true
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread"] }

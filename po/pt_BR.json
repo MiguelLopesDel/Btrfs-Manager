@@ -1,0 +1,13 @@
+{
+  "app.name": "Gerenciador Btrfs",
+  "snapshots.title": "Snapshots",
+  "snapshots.search": "Buscar snapshots",
+  "snapshots.empty": "Nenhum snapshot carregado",
+  "action.refresh": "Atualizar",
+  "action.create_snapshot": "Criar snapshot",
+  "action.compare": "Comparar",
+  "action.browse": "Explorar somente leitura",
+  "action.rollback": "Preparar rollback",
+  "action.unlock_snapshot": "Desbloquear snapshot",
+  "warning.unlock_snapshot": "Desbloquear um snapshot permite escrita e pode quebrar premissas de backup incremental."
+}

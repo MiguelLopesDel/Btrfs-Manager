@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/kucherenko/jscpd/master/schemas/jscpd-schema.json",
+  "threshold": 100,
+  "reporters": ["console", "json"],
+  "mode": "strict",
+  "minLines": 8,
+  "minTokens": 60,
+  "pattern": [
+    "crates/**/*.rs",
+    "scripts/**/*.sh",
+    "scripts/**/*.py"
+  ],
+  "ignore": [
+    "target/**",
+    "quality/**",
+    "docs/technical-documentation.html"
+  ],
+  "output": "quality/jscpd"
+}

@@ -1,0 +1,15 @@
+[defaults]
+snapshot_root = ".snapshots"
+readonly_snapshots = true
+mount_root = "/run/btrfs-manager/mounts"
+
+[retention]
+hourly = 24
+daily = 7
+weekly = 4
+monthly = 6
+
+[safety]
+allow_external_snapshot_mutation = false
+require_strong_confirmation_for_unlock = true
+require_return_snapshot_before_rollback = true

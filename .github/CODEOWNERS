@@ -1,0 +1,8 @@
+* @miguell
+
+/crates/helper/ @miguell
+/crates/core/src/models.rs @miguell
+/crates/core/src/rollback.rs @miguell
+/scripts/ @miguell
+/packaging/ @miguell
+/.github/workflows/ @miguell

@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.btrfsmanager.Helper
+Exec=/usr/lib/btrfs-manager/btrfs-manager-helper service
+User=root
