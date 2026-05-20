@@ -57,6 +57,15 @@ The GUI feature requires native GTK4/libadwaita development packages:
 cargo run -p btrfs-manager-app --features gui
 ```
 
-Repository runs fall back to local discovery and `pkexec` when the installed D-Bus service is not available. Set `BTRFS_MANAGER_REQUIRE_DBUS=1` to force the GUI to use only the D-Bus helper path while testing packaging.
+Installed GUI builds use only the system D-Bus helper service for Btrfs/system
+operations. They do not call `pkexec` or the helper CLI directly. For repository
+development only, set `BTRFS_MANAGER_DEV_LOCAL_HELPER=1` to use the in-process
+helper fallback when the D-Bus service is not installed.
+
+After installing a package on the host, verify the privilege boundary with:
+
+```sh
+scripts/check-installed-dbus-helper.sh
+```
 
 Real Btrfs integration tests should be run in a VM or throwaway loopback filesystem.

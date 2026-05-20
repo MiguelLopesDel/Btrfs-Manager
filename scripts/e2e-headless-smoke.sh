@@ -9,7 +9,7 @@ if ! command -v xvfb-run >/dev/null 2>&1; then
   exit 127
 fi
 
-export BTRFS_MANAGER_REQUIRE_DBUS=0
+export BTRFS_MANAGER_DEV_LOCAL_HELPER=1
 export G_MESSAGES_DEBUG=none
 export GDK_BACKEND=x11
 export GTK_A11Y=none

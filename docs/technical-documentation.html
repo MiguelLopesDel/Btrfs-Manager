@@ -488,7 +488,7 @@
         <h2>Do evento da interface ao resultado operacional</h2>
         <div class="timeline">
           <div class="step"><div><h3>Aplicação inicia</h3><p>A GUI cria `UiState`, `ToastOverlay`, seletor de filesystem e lista principal. Se existem mounts gerenciados antigos, tenta cleanup seguro.</p></div></div>
-          <div class="step"><div><h3>Discovery autorizado</h3><p>`DiscoverFilesystems` passa pelo helper D-Bus quando instalado; a ação Polkit de discovery permite sessão ativa sem senha. Em desenvolvimento, há fallback local.</p></div></div>
+          <div class="step"><div><h3>Discovery autorizado</h3><p>`DiscoverFilesystems` passa pelo serviço D-Bus em builds instalados; a ação Polkit de discovery permite sessão ativa sem senha. Em desenvolvimento, fallback local só existe com `BTRFS_MANAGER_DEV_LOCAL_HELPER=1`.</p></div></div>
           <div class="step"><div><h3>Inventário</h3><p>`ListSubvolumes` executa `btrfs subvolume list -u`, parseia linhas, classifica cada subvolume e retorna `SubvolumeInventory` estruturado.</p></div></div>
           <div class="step"><div><h3>Renderização</h3><p>A GUI separa `Snapshot`/`ExternalSnapshot` de `Normal`/`SnapshotContainer`, mostrando `@snapshots` como container e snapshots reais na seção de snapshots.</p></div></div>
           <div class="step"><div><h3>Browse read-only</h3><p>Ao abrir snapshot, resolve path direto ou monta top-level `subvolid=5`, cria bind mount read-only e abre o path com `xdg-open`.</p></div></div>
@@ -498,7 +498,7 @@
   -> HelperRequest
   -> D-Bus org.btrfsmanager.Helper quando instalado
   -> autorização Polkit por classe de ação
-  -> fallback de desenvolvimento: local ou pkexec/helper
+  -> fallback local somente com BTRFS_MANAGER_DEV_LOCAL_HELPER=1
   -> parser/modelos do core classificam os dados
   -> SubvolumeInventory JSON
   -> linhas e ações na lista GTK</code></pre>
@@ -599,7 +599,8 @@ cargo clippy -p btrfs-manager-app --features gui --all-targets -- -D warnings
 cargo test --workspace --all-targets --no-default-features
 bash scripts/dev-loopback-btrfs-test.sh
 cargo deny check
-cargo llvm-cov --workspace --no-default-features --fail-under-lines 46</code></pre>
+cargo llvm-cov --workspace --no-default-features --lcov --output-path lcov.info
+python3 scripts/quality-gate.py check --write-report --lcov lcov.info</code></pre>
         <div class="grid two">
           <div class="module">
             <span class="pill">Regra de review</span>
@@ -619,11 +620,11 @@ cargo llvm-cov --workspace --no-default-features --fail-under-lines 46</code></p
         <h2>Causa e efeito dos erros comuns</h2>
         <details open>
           <summary>Polkit pede senha várias vezes ao abrir ou atualizar</summary>
-          <p><strong>Causa:</strong> fallback antigo por `pkexec` ou serviço D-Bus/Polkit não instalado corretamente. <strong>Correção atual:</strong> em builds instalados, discovery/listagem usam D-Bus com ação Polkit sem senha para sessão ativa; prompts devem aparecer apenas em mount/unmount/create/delete/toggle/policy/rollback.</p>
+          <p><strong>Causa:</strong> serviço D-Bus/Polkit não instalado corretamente ou helper antigo ainda em uso. <strong>Correção atual:</strong> em builds instalados, a GUI usa apenas D-Bus; prompts devem aparecer apenas em mount/unmount/create/delete/toggle/policy write/rollback.</p>
         </details>
         <details>
           <summary>Discovery failed: Operation not permitted ao listar `/`</summary>
-          <p><strong>Causa:</strong> em alguns hosts, `btrfs subvolume list /` exige privilégio mesmo para leitura. <strong>Correção atual:</strong> a GUI tenta listagem local apenas como otimização; se falhar, continua para D-Bus/Polkit ou `pkexec` em vez de mostrar o erro diretamente.</p>
+          <p><strong>Causa:</strong> em alguns hosts, `btrfs subvolume list /` exige privilégio mesmo para leitura. <strong>Correção atual:</strong> a GUI instalada não executa listagem local; ela chama o serviço D-Bus, que autoriza discovery/listagem via Polkit.</p>
         </details>
         <details>
           <summary>missing field `kind` ao carregar inventário</summary>

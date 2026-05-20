@@ -130,6 +130,7 @@ rmdir "$MOUNTPOINT/snapshots/snap-1-browse"
 
 echo "==> Reproducing root mounted as subvol=@ with snapshots in top-level"
 sudo btrfs subvolume create "$MOUNTPOINT/@" >/dev/null
+sudo chown "$(id -u):$(id -g)" "$MOUNTPOINT/@"
 mkdir -p "$MOUNTPOINT/@/etc"
 printf "root version one\n" > "$MOUNTPOINT/@/etc/example.conf"
 sudo btrfs subvolume create "$MOUNTPOINT/@snapshots" >/dev/null

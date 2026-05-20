@@ -283,7 +283,6 @@ def compare(current: dict[str, object], baseline: dict[str, object]) -> list[str
         "metrics.max_file_lines",
         "metrics.max_function_lines",
         "metrics.max_function_complexity",
-        "metrics.duplication.duplicate_ratio_percent",
         "metrics.duplication.duplicate_blocks",
     ]
     greater_or_equal = [

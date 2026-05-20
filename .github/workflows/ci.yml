@@ -113,7 +113,7 @@ jobs:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
-      - run: cargo llvm-cov --workspace --no-default-features --fail-under-lines 46 --lcov --output-path lcov.info
+      - run: cargo llvm-cov --workspace --no-default-features --lcov --output-path lcov.info
       - run: python3 scripts/quality-gate.py check --write-report --lcov lcov.info
       - uses: actions/upload-artifact@v4
         with:
@@ -198,7 +198,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck libxml2-utils desktop-file-utils
       - run: shellcheck scripts/dev-loopback-btrfs-test.sh scripts/vm-arch-bootstrap.sh scripts/copy-last-screenshot
-      - run: shellcheck scripts/e2e-headless-smoke.sh scripts/github-bootstrap.sh
+      - run: shellcheck scripts/e2e-headless-smoke.sh scripts/github-bootstrap.sh scripts/check-gui-privilege-boundary.sh scripts/check-installed-dbus-helper.sh
+      - run: bash scripts/check-gui-privilege-boundary.sh
       - run: xmllint --noout packaging/polkit/org.btrfsmanager.helper.policy
       - run: desktop-file-validate packaging/linux/org.btrfsmanager.App.desktop
 

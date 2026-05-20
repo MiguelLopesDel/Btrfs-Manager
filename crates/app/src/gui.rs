@@ -367,154 +367,27 @@ fn filesystem_label(filesystem: &btrfs_manager_core::models::FilesystemSummary) 
 }
 
 fn handle_privileged(request: HelperRequest) -> anyhow::Result<HelperResponse> {
-    let can_try_local = can_run_unprivileged(&request);
-    let dbus_error = match dbus_client::handle(&request) {
-        Ok(response) => return Ok(response),
-        Err(error) => error,
-    };
-
-    if matches!(&dbus_error, dbus_client::HelperBusError::Request(_)) {
-        return Err(anyhow::Error::new(dbus_error));
+    match dbus_client::handle(&request) {
+        Ok(response) => Ok(response),
+        Err(dbus_client::HelperBusError::Request(error)) => Err(error),
+        Err(dbus_client::HelperBusError::Unavailable(error)) => {
+            if dev_local_helper_enabled() {
+                let helper = Helper::new(SystemCommandRunner);
+                helper.handle(request).map_err(anyhow::Error::from)
+            } else {
+                anyhow::bail!(
+                    "Btrfs Manager system service is not available: {error}. Install and start org.btrfsmanager.Helper, or set BTRFS_MANAGER_DEV_LOCAL_HELPER=1 only for repository development."
+                );
+            }
+        }
     }
-
-    if std::env::var_os("BTRFS_MANAGER_REQUIRE_DBUS").is_some() {
-        return Err(anyhow::anyhow!("D-Bus helper request failed: {dbus_error}"));
-    }
-
-    let local_error = if can_try_local {
-        let helper = Helper::new(SystemCommandRunner);
-        match helper.handle(request.clone()) {
-            Ok(response) => return Ok(response),
-            Err(err) => Some(anyhow::Error::from(err)),
-        }
-    } else {
-        None
-    };
-
-    let helper_path = helper_binary_path();
-
-    if command_exists("pkexec") && helper_path.exists() {
-        let mut command = Command::new("pkexec");
-        command.arg(helper_path);
-        append_helper_cli_args(&mut command, &request)?;
-        let output = command.output()?;
-        if output.status.success() {
-            let response = serde_json::from_slice::<HelperResponse>(&output.stdout)?;
-            return Ok(response);
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if let Some(err) = local_error {
-            anyhow::bail!(
-                "helper authorization or execution failed: {stderr}; local fallback also failed: {err}"
-            );
-        }
-        if !can_try_local {
-            anyhow::bail!("helper authorization or execution failed: {stderr}");
-        }
-    } else if let Some(err) = local_error {
-        anyhow::bail!("local helper fallback failed and pkexec helper is unavailable: {err}");
-    }
-
-    let helper = Helper::new(SystemCommandRunner);
-    helper.handle(request).map_err(anyhow::Error::from)
 }
 
-fn can_run_unprivileged(request: &HelperRequest) -> bool {
+fn dev_local_helper_enabled() -> bool {
     matches!(
-        request,
-        HelperRequest::DiscoverFilesystems | HelperRequest::ListSubvolumes { .. }
+        std::env::var("BTRFS_MANAGER_DEV_LOCAL_HELPER").as_deref(),
+        Ok("1" | "true" | "yes" | "on")
     )
-}
-
-fn append_helper_cli_args(command: &mut Command, request: &HelperRequest) -> anyhow::Result<()> {
-    match request {
-        HelperRequest::DiscoverFilesystems => {
-            command.arg("discover-filesystems");
-            Ok(())
-        }
-        HelperRequest::ListSubvolumes { mountpoint } => {
-            command.arg("list-subvolumes").arg(mountpoint);
-            Ok(())
-        }
-        HelperRequest::MountSnapshot { source, target } => {
-            command.arg("mount-snapshot").arg(source).arg(target);
-            Ok(())
-        }
-        HelperRequest::MountTopLevel { mountpoint, target } => {
-            command.arg("mount-top-level").arg(mountpoint).arg(target);
-            Ok(())
-        }
-        HelperRequest::UnmountSnapshot { target } => {
-            command.arg("unmount-snapshot").arg(target);
-            Ok(())
-        }
-        HelperRequest::CleanupManagedMounts => {
-            command.arg("cleanup-managed-mounts");
-            Ok(())
-        }
-        HelperRequest::ListSnapshotPolicies => {
-            command.arg("list-snapshot-policies");
-            Ok(())
-        }
-        HelperRequest::UpsertSnapshotPolicy { policy } => {
-            command
-                .arg("upsert-snapshot-policy")
-                .arg("--json")
-                .arg(serde_json::to_string(policy)?);
-            Ok(())
-        }
-        HelperRequest::SetSnapshotPolicyEnabled { policy_id, enabled } => {
-            command
-                .arg("set-snapshot-policy-enabled")
-                .arg(policy_id.to_string())
-                .arg(enabled.to_string());
-            Ok(())
-        }
-        HelperRequest::PreviewRetention { policy_id } => {
-            command.arg("preview-retention").arg(policy_id.to_string());
-            Ok(())
-        }
-        HelperRequest::PreviewRetentionForPolicy { policy } => {
-            command
-                .arg("preview-retention-for-policy")
-                .arg("--json")
-                .arg(serde_json::to_string(policy)?);
-            Ok(())
-        }
-        HelperRequest::RunRetentionPolicy { policy_id } => {
-            command
-                .arg("run-retention-policy")
-                .arg("--policy-id")
-                .arg(policy_id.to_string());
-            Ok(())
-        }
-        HelperRequest::ListPolicyRunLogs { policy_id } => {
-            command
-                .arg("list-policy-run-logs")
-                .arg(policy_id.to_string());
-            Ok(())
-        }
-        _ => anyhow::bail!("helper request is not wired to the GUI yet"),
-    }
-}
-
-fn helper_binary_path() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| {
-            path.parent()
-                .map(|parent| parent.join("btrfs-manager-helper"))
-        })
-        .unwrap_or_else(|| PathBuf::from("target/debug/btrfs-manager-helper"))
-}
-
-fn command_exists(command: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {command} >/dev/null 2>&1"))
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
 }
 
 fn unmount_session_mounts(state: &UiState) -> anyhow::Result<()> {
