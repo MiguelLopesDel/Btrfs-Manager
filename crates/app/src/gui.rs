@@ -768,12 +768,13 @@ fn render_snapshot_row(
             let state_c = state_for_delete.clone();
             let list_c = list_for_delete.clone();
             let path_c = path_for_delete.clone();
+            let mount_c = mountpoint.clone();
             dialog.connect_response(None, move |_, response| {
                 if response != "delete" {
                     return;
                 }
                 match handle_privileged(HelperRequest::DeleteManagedSnapshot {
-                    mountpoint: mountpoint.clone(),
+                    mountpoint: mount_c.clone(),
                     subvolume_path: path_c.clone(),
                 }) {
                     Ok(_) => {
