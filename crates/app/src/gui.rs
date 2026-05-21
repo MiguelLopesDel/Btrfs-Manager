@@ -216,15 +216,13 @@ fn build_ui(app: &libadwaita::Application) {
         .content(&toast_overlay)
         .build();
     let state_for_close = ui_state.clone();
-    window.connect_close_request(move |_| match unmount_session_mounts(&state_for_close) {
-        Ok(()) => glib::Propagation::Proceed,
-        Err(err) => {
-            show_toast(
-                &state_for_close.toast_overlay,
-                &format!("Failed to unmount session browse mounts: {err}"),
-            );
-            glib::Propagation::Stop
+    window.connect_close_request(move |_| {
+        // Always allow the window to close — cleanup is best-effort.
+        // Stale mounts are recovered by CleanupManagedMounts on next launch.
+        if let Err(err) = unmount_session_mounts(&state_for_close) {
+            tracing::error!(error = %err, "failed to unmount session browse mounts on close");
         }
+        glib::Propagation::Proceed
     });
     window.present();
 
@@ -398,15 +396,23 @@ fn unmount_session_mounts(state: &UiState) -> anyhow::Result<()> {
         .iter()
         .cloned()
         .collect::<Vec<_>>();
+    // Longest paths first: unmount browse mounts before top-level mounts.
     targets.sort_by_key(|target| std::cmp::Reverse(target.as_os_str().len()));
+    let mut first_err: Option<anyhow::Error> = None;
     for target in &targets {
-        handle_privileged(HelperRequest::UnmountSnapshot {
+        if let Err(err) = handle_privileged(HelperRequest::UnmountSnapshot {
             target: target.clone(),
-        })?;
+        }) {
+            // Log and continue — try to unmount remaining mounts even if one fails.
+            tracing::warn!(target = %target.display(), error = %err, "unmount failed during session cleanup");
+            if first_err.is_none() {
+                first_err = Some(err);
+            }
+        }
     }
     state.session_mounts.borrow_mut().clear();
     state.mounted_snapshots.borrow_mut().clear();
-    Ok(())
+    first_err.map_or(Ok(()), Err)
 }
 
 fn browse_mount_root() -> PathBuf {

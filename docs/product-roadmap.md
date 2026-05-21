@@ -204,7 +204,7 @@ Tarefas:
 - [x] Abrir snapshot no file manager.
 - [~] Mostrar estado montado na UI.
 - [~] Ação explícita de unmount.
-- [~] Cleanup de mounts da sessão ao fechar a GUI.
+- [x] Cleanup de mounts da sessão ao fechar a GUI.
 - [ ] Cleanup global seguro via serviço D-Bus.
 - [ ] Nome curto e legível para diretórios temporários de browse.
 - [x] Teste que garante escrita negada no mount browse.
