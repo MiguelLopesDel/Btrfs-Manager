@@ -202,21 +202,21 @@ Tarefas:
 
 - [x] Montar snapshot como read-only em path gerenciado.
 - [x] Abrir snapshot no file manager.
-- [~] Mostrar estado montado na UI.
-- [~] Ação explícita de unmount.
+- [x] Mostrar estado montado na UI.
+- [x] Ação explícita de unmount.
 - [x] Cleanup de mounts da sessão ao fechar a GUI.
-- [ ] Cleanup global seguro via serviço D-Bus.
-- [ ] Nome curto e legível para diretórios temporários de browse.
+- [x] Cleanup global seguro via serviço D-Bus.
+- [x] Nome curto e legível para diretórios temporários de browse.
 - [x] Teste que garante escrita negada no mount browse.
 - [x] Teste de cleanup no loopback.
 
 Aceite:
 
-- [ ] Clique em browse abre view read-only.
-- [ ] Escrita no browse path falha.
-- [ ] Fechar GUI desmonta mounts criados por aquela sessão.
-- [ ] `lsblk` não fica poluído após cleanup.
-- [ ] Testes e quality gates passam.
+- [x] Clique em browse abre view read-only.
+- [x] Escrita no browse path falha.
+- [x] Fechar GUI desmonta mounts criados por aquela sessão.
+- [x] `lsblk` não fica poluído após cleanup.
+- [x] Testes e quality gates passam.
 
 ## Fase 4: Snapshots Gerenciados Manuais
 

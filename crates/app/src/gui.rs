@@ -459,12 +459,14 @@ fn short_snapshot_mount_name(path: &std::path::Path) -> String {
         .components()
         .filter_map(|component| component.as_os_str().to_str())
         .collect::<Vec<_>>();
-    let leaf = components.pop().unwrap_or("snapshot");
-    let label = if leaf == "snapshot" {
-        components.pop().unwrap_or("snapshot")
-    } else {
-        leaf
-    };
+    // Pop trivial leaf identifiers: Snapper ends in "snapshot", Timeshift ends
+    // in "@" or "@home". Neither carries useful name information.
+    if let Some(&last) = components.last() {
+        if last == "snapshot" || last.starts_with('@') {
+            components.pop();
+        }
+    }
+    let label = components.pop().unwrap_or("snapshot");
     format!("snapshot-{}-{:08x}", sanitize_name(label), path_hash(path))
 }
 
