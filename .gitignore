@@ -9,6 +9,9 @@
 lcov.info
 mutation-report/
 CLAUDE.md
+*.png
+*.jpg
+*.jpeg
 .claude/
 .agents/
 .codex/
