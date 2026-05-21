@@ -1400,7 +1400,13 @@ fn path_looks_like_snapshot_container(path: &Path) -> bool {
     };
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "@snapshots" | ".snapshots" | "snapshots" | "snapper" | "timeshift" | "timeshift-btrfs"
+        "@snapshots"
+            | ".snapshots"
+            | "snapshots"
+            | "snapper"
+            | "timeshift"
+            | "timeshift-btrfs"
+            | "btrfs-manager-snapshots"
     )
 }
 

@@ -950,13 +950,13 @@ fn open_create_snapshot_dialog(
     // Snapshot root is relative to the Btrfs volume root (e.g. "@snapshots").
     // The helper will mount the top-level, find this dir, and create the snapshot there.
     let snap_root_entry = gtk4::Entry::builder()
-        .text("@snapshots")
+        .text("btrfs-manager-snapshots")
         .hexpand(true)
         .build();
     content.append(&labeled_widget("Snapshot root", &snap_root_entry));
 
     let info = gtk4::Label::builder()
-        .label("Snapshot will be created as managed-<timestamp> inside the snapshot root.")
+        .label("Path relative to the Btrfs volume root. Created automatically if it does not exist. Snapshot name: managed-<timestamp>.")
         .halign(gtk4::Align::Start)
         .wrap(true)
         .css_classes(["caption", "dim-label"])
