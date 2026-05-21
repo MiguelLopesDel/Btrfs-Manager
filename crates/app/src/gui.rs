@@ -654,6 +654,7 @@ fn render_snapshot_row(
     mountpoint: &std::path::Path,
     state: UiState,
 ) {
+    let mountpoint = mountpoint.to_path_buf();
     let source_mountpoint = mountpoint.to_path_buf();
     let relative_path = snapshot.path.clone();
     let target = browse_mount_target(&relative_path);
@@ -771,7 +772,10 @@ fn render_snapshot_row(
                 if response != "delete" {
                     return;
                 }
-                match handle_privileged(HelperRequest::DeleteManagedSnapshot { path: path_c.clone() }) {
+                match handle_privileged(HelperRequest::DeleteManagedSnapshot {
+                    mountpoint: mountpoint.clone(),
+                    subvolume_path: path_c.clone(),
+                }) {
                     Ok(_) => {
                         list_c.remove(&row_c);
                         show_toast(&state_c.toast_overlay, "Snapshot deleted");

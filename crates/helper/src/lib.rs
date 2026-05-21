@@ -82,7 +82,10 @@ pub enum HelperRequest {
     },
     ListManagedSnapshots,
     DeleteManagedSnapshot {
-        path: PathBuf,
+        // filesystem mountpoint (e.g. "/")
+        mountpoint: PathBuf,
+        // subvolume path relative to the Btrfs volume root (e.g. "@btrfs-manager/managed-...")
+        subvolume_path: PathBuf,
     },
     ListSnapshotPolicies,
     UpsertSnapshotPolicy {
@@ -441,18 +444,45 @@ impl<R: CommandRunner> Helper<R> {
                     data: Some(serde_json::to_value(&snapshots)?),
                 })
             }
-            HelperRequest::DeleteManagedSnapshot { path } => {
-                validate_path(&path)?;
+            HelperRequest::DeleteManagedSnapshot { mountpoint, subvolume_path } => {
+                validate_path(&mountpoint)?;
                 let store = StateStore::open()?;
-                // Verify this path is in the managed_snapshots table before deleting.
-                let id = store.find_managed_snapshot_id_by_path(&path)?;
-                let args = vec!["subvolume".into(), "delete".into(), path.display().to_string()];
-                self.runner.run("btrfs", &args)?;
+                let id = store.find_managed_snapshot_id_by_path(&subvolume_path)?;
+
+                // Need top-level mount to access the relative subvolume path.
+                let findmnt_args = vec![
+                    "-n".into(), "-o".into(), "SOURCE".into(),
+                    "--target".into(), mountpoint.display().to_string(),
+                ];
+                let device_raw = self.runner.run("findmnt", &findmnt_args)?;
+                let device = normalize_findmnt_source(device_raw.trim());
+
+                let temp_suffix = Uuid::new_v4().simple().to_string();
+                let top = std::env::temp_dir()
+                    .join(format!("btrfs-manager-del-{temp_suffix}"));
+                std::fs::create_dir_all(&top)?;
+
+                let delete_result: Result<(), HelperError> = (|| {
+                    let mount_args = vec![
+                        "-o".into(), "subvolid=5".into(),
+                        device, top.display().to_string(),
+                    ];
+                    self.runner.run("mount", &mount_args)?;
+                    let abs_path = top.join(&subvolume_path);
+                    let del_args = vec!["subvolume".into(), "delete".into(), abs_path.display().to_string()];
+                    self.runner.run("btrfs", &del_args)?;
+                    Ok(())
+                })();
+
+                let _ = self.runner.run("umount", &[top.display().to_string()]);
+                let _ = std::fs::remove_dir(&top);
+
+                delete_result?;
                 store.delete_managed_snapshot(id)?;
-                tracing::info!(path = %path.display(), "managed snapshot deleted");
+                tracing::info!(path = %subvolume_path.display(), "managed snapshot deleted");
                 Ok(HelperResponse {
                     ok: true,
-                    message: format!("snapshot deleted: {}", path.display()),
+                    message: format!("snapshot deleted: {}", subvolume_path.display()),
                     data: None,
                 })
             }
