@@ -257,6 +257,7 @@ dependencies = [
  "anyhow",
  "btrfs-manager-core",
  "btrfs-manager-helper",
+ "chrono",
  "clap",
  "gtk4",
  "libadwaita",

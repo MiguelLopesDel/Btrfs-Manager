@@ -224,21 +224,21 @@ Objetivo: criar e remover snapshots do app com estado persistido.
 
 Tarefas:
 
-- [ ] UI de criar snapshot para subvolume selecionado.
-- [ ] Convenção de destino sob snapshot root configurável.
-- [ ] Nome gerado previsível com timestamp.
-- [ ] Tags/notas opcionais.
-- [ ] Persistir metadata SQLite.
-- [ ] Refresh de inventário após criação/remoção.
-- [ ] Delete apenas para snapshots gerenciados, salvo opt-in explícito.
+- [x] UI de criar snapshot para subvolume selecionado.
+- [x] Convenção de destino sob snapshot root configurável.
+- [x] Nome gerado previsível com timestamp.
+- [x] Tags/notas opcionais.
+- [x] Persistir metadata SQLite.
+- [x] Refresh de inventário após criação/remoção.
+- [x] Delete apenas para snapshots gerenciados, salvo opt-in explícito.
 
 Aceite:
 
-- [ ] Usuário cria snapshot read-only pela UI.
-- [ ] Snapshot aparece como gerenciado.
-- [ ] Metadata sobrevive a reinício da GUI.
-- [ ] Delete exige confirmação e remove só alvo correto.
-- [ ] Testes e quality gates passam.
+- [~] Usuário cria snapshot read-only pela UI.
+- [~] Snapshot aparece como gerenciado.
+- [~] Metadata sobrevive a reinício da GUI.
+- [~] Delete exige confirmação e remove só alvo correto.
+- [~] Testes e quality gates passam.
 
 ## Fase 5: Timeline, Busca E Filtros
 

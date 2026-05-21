@@ -609,6 +609,25 @@ fn render_inventory(
             .title(subvolume.path.display().to_string())
             .subtitle(format!("ID {}", subvolume.id.0))
             .build();
+
+        let snapshot_btn = gtk4::Button::builder()
+            .icon_name("camera-photo-symbolic")
+            .tooltip_text("Create snapshot")
+            .valign(gtk4::Align::Center)
+            .build();
+        let state_for_snap = state.clone();
+        let mountpoint_for_snap = mountpoint.clone();
+        let subvolume_for_snap = (*subvolume).clone();
+        let list_for_snap = list.clone();
+        snapshot_btn.connect_clicked(move |_| {
+            open_create_snapshot_dialog(
+                state_for_snap.clone(),
+                list_for_snap.clone(),
+                mountpoint_for_snap.clone(),
+                subvolume_for_snap.clone(),
+            );
+        });
+
         let schedule = gtk4::Button::builder()
             .icon_name("alarm-symbolic")
             .tooltip_text("Snapshot policy")
@@ -623,6 +642,7 @@ fn render_inventory(
                 subvolume_for_policy.clone(),
             );
         });
+        row.add_suffix(&snapshot_btn);
         row.add_suffix(&schedule);
         list.append(&row);
     }
@@ -719,6 +739,55 @@ fn render_snapshot_row(
 
     row.add_suffix(&browse);
     row.add_suffix(&unmount);
+
+    if snapshot.managed {
+        let delete = gtk4::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Delete managed snapshot")
+            .valign(gtk4::Align::Center)
+            .css_classes(["destructive-action"])
+            .build();
+        let row_for_delete = row.clone();
+        let state_for_delete = state.clone();
+        let list_for_delete = list.clone();
+        let path_for_delete = snapshot.path.clone();
+        delete.connect_clicked(move |btn| {
+            let dialog = libadwaita::AlertDialog::builder()
+                .heading("Delete snapshot?")
+                .body(format!(
+                    "Permanently delete {}? This cannot be undone.",
+                    path_for_delete.display()
+                ))
+                .build();
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("delete", "Delete");
+            dialog.set_response_appearance("delete", libadwaita::ResponseAppearance::Destructive);
+            dialog.set_default_response(Some("cancel"));
+            let row_c = row_for_delete.clone();
+            let state_c = state_for_delete.clone();
+            let list_c = list_for_delete.clone();
+            let path_c = path_for_delete.clone();
+            dialog.connect_response(None, move |_, response| {
+                if response != "delete" {
+                    return;
+                }
+                match handle_privileged(HelperRequest::DeleteManagedSnapshot { path: path_c.clone() }) {
+                    Ok(_) => {
+                        list_c.remove(&row_c);
+                        show_toast(&state_c.toast_overlay, "Snapshot deleted");
+                    }
+                    Err(err) => show_toast(
+                        &state_c.toast_overlay,
+                        &format!("Failed to delete snapshot: {err}"),
+                    ),
+                }
+            });
+            let window = btn.root().and_downcast::<gtk4::Window>();
+            dialog.present(window.as_ref());
+        });
+        row.add_suffix(&delete);
+    }
+
     list.append(&row);
 }
 
@@ -841,6 +910,118 @@ fn invalidate_policy_preview(
     preview_valid.set(false);
     save.set_sensitive(false);
     run.set_sensitive(false);
+}
+
+fn open_create_snapshot_dialog(
+    state: UiState,
+    list: gtk4::ListBox,
+    mountpoint: PathBuf,
+    subvolume: Subvolume,
+) {
+    let default_source = mountpoint.join(&subvolume.path);
+    let default_dest = {
+        let ts = chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S");
+        let snap_root = if mountpoint.join(".snapshots").exists() {
+            mountpoint.join(".snapshots")
+        } else {
+            mountpoint.join("@snapshots")
+        };
+        snap_root.join(format!("managed-{ts}"))
+    };
+
+    let window = libadwaita::Window::builder()
+        .title("Create Snapshot")
+        .default_width(480)
+        .modal(true)
+        .build();
+
+    let content = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
+        .spacing(12)
+        .margin_top(16)
+        .margin_bottom(16)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+
+    let header = libadwaita::HeaderBar::new();
+    let root_box = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
+        .build();
+    root_box.append(&header);
+    root_box.append(&content);
+
+    let title = gtk4::Label::builder()
+        .label(format!("Snapshot of {}", subvolume.path.display()))
+        .halign(gtk4::Align::Start)
+        .css_classes(["title-3"])
+        .build();
+    content.append(&title);
+
+    let source_entry = gtk4::Entry::builder()
+        .text(default_source.display().to_string())
+        .hexpand(true)
+        .build();
+    content.append(&labeled_widget("Source path", &source_entry));
+
+    let dest_entry = gtk4::Entry::builder()
+        .text(default_dest.display().to_string())
+        .hexpand(true)
+        .build();
+    content.append(&labeled_widget("Destination", &dest_entry));
+
+    let tags_entry = gtk4::Entry::builder()
+        .placeholder_text("Optional: comma-separated tags")
+        .hexpand(true)
+        .build();
+    content.append(&labeled_widget("Tags", &tags_entry));
+
+    let buttons = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(8)
+        .halign(gtk4::Align::End)
+        .margin_top(8)
+        .build();
+    let cancel_btn = gtk4::Button::builder().label("Cancel").build();
+    let create_btn = gtk4::Button::builder()
+        .label("Create")
+        .css_classes(["suggested-action"])
+        .build();
+    buttons.append(&cancel_btn);
+    buttons.append(&create_btn);
+    content.append(&buttons);
+
+    window.set_content(Some(&root_box));
+
+    let window_for_cancel = window.clone();
+    cancel_btn.connect_clicked(move |_| window_for_cancel.close());
+
+    let window_for_create = window.clone();
+    create_btn.connect_clicked(move |_| {
+        let source = PathBuf::from(source_entry.text().as_str());
+        let destination = PathBuf::from(dest_entry.text().as_str());
+        let tags: Vec<String> = tags_entry
+            .text()
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+
+        match handle_privileged(HelperRequest::CreateManagedSnapshot {
+            source,
+            destination,
+            tags,
+        }) {
+            Ok(_) => {
+                window_for_create.close();
+                show_toast(&state.toast_overlay, "Snapshot created");
+                load_mountpoint(&list, state.clone(), "", mountpoint.clone());
+            }
+            Err(err) => show_toast(&state.toast_overlay, &format!("Failed to create snapshot: {err}")),
+        }
+    });
+
+    window.present();
 }
 
 fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume) {

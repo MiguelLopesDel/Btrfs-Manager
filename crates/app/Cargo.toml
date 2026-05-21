@@ -15,9 +15,10 @@ btrfs-manager-helper = { path = "../helper" }
 btrfs-manager-core = { path = "../core" }
 clap.workspace = true
 gtk4 = { version = "0.10", optional = true }
-libadwaita = { version = "0.8", optional = true }
+libadwaita = { version = "0.8", optional = true, features = ["v1_5"] }
 serde_json.workspace = true
 uuid.workspace = true
+chrono.workspace = true
 zbus.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

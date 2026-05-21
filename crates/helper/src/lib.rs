@@ -71,6 +71,15 @@ pub enum HelperRequest {
         target: PathBuf,
     },
     CleanupManagedMounts,
+    CreateManagedSnapshot {
+        source: PathBuf,
+        destination: PathBuf,
+        tags: Vec<String>,
+    },
+    ListManagedSnapshots,
+    DeleteManagedSnapshot {
+        path: PathBuf,
+    },
     ListSnapshotPolicies,
     UpsertSnapshotPolicy {
         policy: SnapshotPolicy,
@@ -189,6 +198,14 @@ impl<R: CommandRunner> Helper<R> {
                 let output = self.runner.run("btrfs", &args)?;
                 let mut subvolumes = parse_btrfs_subvolume_list(&output)?;
                 classify_subvolumes(&mut subvolumes);
+                // Mark subvolumes that have a managed snapshot record in SQLite.
+                if let Ok(managed) = StateStore::open().and_then(|s| s.list_managed_snapshot_paths()) {
+                    for subvolume in &mut subvolumes {
+                        if managed.contains(&subvolume.path) {
+                            subvolume.managed = true;
+                        }
+                    }
+                }
                 let snapshots = snapshots_from_subvolumes(&subvolumes);
                 let inventory = SubvolumeInventory {
                     mountpoint,
@@ -330,6 +347,61 @@ impl<R: CommandRunner> Helper<R> {
                 Ok(HelperResponse {
                     ok: true,
                     message: format!("cleaned up {count} managed mount(s)"),
+                    data: None,
+                })
+            }
+            HelperRequest::CreateManagedSnapshot {
+                source,
+                destination,
+                tags,
+            } => {
+                validate_path(&source)?;
+                validate_path(&destination)?;
+                let args = vec![
+                    "subvolume".into(),
+                    "snapshot".into(),
+                    "-r".into(),
+                    source.display().to_string(),
+                    destination.display().to_string(),
+                ];
+                self.runner.run("btrfs", &args)?;
+                let snapshot = Snapshot {
+                    id: Uuid::new_v4(),
+                    source_subvolume: SubvolumeId(0),
+                    path: destination.clone(),
+                    created_at: Utc::now(),
+                    tags,
+                    origin: SnapshotOrigin::Managed,
+                    state: SnapshotState::ReadOnly,
+                };
+                StateStore::open()?.insert_managed_snapshot(None, &snapshot)?;
+                tracing::info!(destination = %destination.display(), "managed snapshot created");
+                Ok(HelperResponse {
+                    ok: true,
+                    message: format!("snapshot created at {}", destination.display()),
+                    data: Some(serde_json::to_value(&snapshot)?),
+                })
+            }
+            HelperRequest::ListManagedSnapshots => {
+                let snapshots = StateStore::open()?.list_all_managed_snapshots()?;
+                Ok(HelperResponse {
+                    ok: true,
+                    message: format!("found {} managed snapshot(s)", snapshots.len()),
+                    data: Some(serde_json::to_value(&snapshots)?),
+                })
+            }
+            HelperRequest::DeleteManagedSnapshot { path } => {
+                validate_path(&path)?;
+                let store = StateStore::open()?;
+                // Verify this path is in the managed_snapshots table before deleting.
+                let id = store.find_managed_snapshot_id_by_path(&path)?;
+                let args = vec!["subvolume".into(), "delete".into(), path.display().to_string()];
+                self.runner.run("btrfs", &args)?;
+                store.delete_managed_snapshot(id)?;
+                tracing::info!(path = %path.display(), "managed snapshot deleted");
+                Ok(HelperResponse {
+                    ok: true,
+                    message: format!("snapshot deleted: {}", path.display()),
                     data: None,
                 })
             }
@@ -616,7 +688,7 @@ impl<R: CommandRunner> Helper<R> {
             origin: SnapshotOrigin::Managed,
             state: SnapshotState::ReadOnly,
         };
-        store.insert_managed_snapshot(policy_id, &snapshot)?;
+        store.insert_managed_snapshot(Some(policy_id), &snapshot)?;
 
         let snapshots = store.list_managed_snapshots_for_policy(policy_id)?;
         let keep = retention_keep_set(&snapshots, &retention_policy_from_snapshot_policy(&policy));
@@ -806,7 +878,7 @@ impl StateStore {
 
     fn insert_managed_snapshot(
         &self,
-        policy_id: Uuid,
+        policy_id: Option<Uuid>,
         snapshot: &Snapshot,
     ) -> Result<(), HelperError> {
         let tags = serde_json::to_string(&snapshot.tags)?;
@@ -814,7 +886,7 @@ impl StateStore {
             "INSERT OR REPLACE INTO managed_snapshots (id, policy_id, source_subvolume_id, path, created_at, tags_json, origin_tool, state) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)",
             params![
                 snapshot.id.to_string(),
-                policy_id.to_string(),
+                policy_id.map(|id| id.to_string()),
                 snapshot.source_subvolume.0 as i64,
                 snapshot.path.display().to_string(),
                 snapshot.created_at.to_rfc3339(),
@@ -823,6 +895,47 @@ impl StateStore {
             ],
         )?;
         Ok(())
+    }
+
+    fn list_all_managed_snapshots(&self) -> Result<Vec<Snapshot>, HelperError> {
+        let mut stmt = self.connection.prepare(
+            "SELECT id, source_subvolume_id, path, created_at, tags_json, origin_tool, state FROM managed_snapshots ORDER BY created_at DESC",
+        )?;
+        let snapshots = stmt
+            .query_map([], snapshot_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(snapshots)
+    }
+
+    fn list_managed_snapshot_paths(&self) -> Result<std::collections::HashSet<PathBuf>, HelperError> {
+        let mut stmt = self.connection.prepare("SELECT path FROM managed_snapshots")?;
+        let paths = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        Ok(paths)
+    }
+
+    fn find_managed_snapshot_id_by_path(&self, path: &Path) -> Result<Uuid, HelperError> {
+        let result: Option<String> = self.connection
+            .query_row(
+                "SELECT id FROM managed_snapshots WHERE path = ?1",
+                params![path.display().to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        result
+            .ok_or_else(|| HelperError::InvalidPolicy(format!(
+                "no managed snapshot at path {}",
+                path.display()
+            )))
+            .and_then(|id| {
+                id.parse::<Uuid>().map_err(|e| {
+                    HelperError::InvalidPolicy(format!("invalid uuid in db: {e}"))
+                })
+            })
     }
 
     fn delete_managed_snapshot(&self, id: Uuid) -> Result<(), HelperError> {

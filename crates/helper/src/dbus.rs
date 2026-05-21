@@ -122,6 +122,9 @@ pub fn action_for_request(request: &HelperRequest) -> &'static str {
         | HelperRequest::MountTopLevel { .. }
         | HelperRequest::UnmountSnapshot { .. }
         | HelperRequest::CleanupManagedMounts => ACTION_MOUNT,
+        HelperRequest::CreateManagedSnapshot { .. } => ACTION_SNAPSHOT_CREATE,
+        HelperRequest::ListManagedSnapshots => ACTION_POLICY_READ,
+        HelperRequest::DeleteManagedSnapshot { .. } => ACTION_SNAPSHOT_DELETE,
         HelperRequest::StageRollback { .. } => ACTION_ROLLBACK,
         HelperRequest::ListSnapshotPolicies
         | HelperRequest::PreviewRetention { .. }
