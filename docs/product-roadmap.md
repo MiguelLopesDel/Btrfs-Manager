@@ -265,12 +265,12 @@ Objetivo: snapshots automáticos sem daemon próprio sempre rodando.
 
 Tarefas:
 
-- [~] Políticas com presets hourly/daily/weekly/monthly.
-- [~] Geração de systemd timers.
-- [~] Preview de retenção.
-- [~] Logs de execução.
-- [ ] UI revisada e validada em host systemd real.
-- [ ] Nunca remover snapshots externos ou rollback anchors.
+- [x] Políticas com presets hourly/daily/weekly/monthly.
+- [x] Geração de systemd timers.
+- [x] Preview de retenção.
+- [x] Logs de execução.
+- [~] UI revisada e validada em host systemd real.
+- [x] Nunca remover snapshots externos ou rollback anchors.
 - [ ] Teste de policy run em ambiente controlado.
 
 Aceite:

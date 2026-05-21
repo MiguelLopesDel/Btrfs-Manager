@@ -1026,7 +1026,9 @@ fn open_create_snapshot_dialog(
 }
 
 fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume) {
-    let source_path = mountpoint.join(&subvolume.path);
+    // source_path is relative to the Btrfs volume root (e.g. "@", "@home").
+    // The helper will mount subvolid=5 internally to access it.
+    let source_path = subvolume.path.clone();
     let existing = load_policy_for_subvolume(subvolume.id.0, &source_path);
     let policy_id = existing
         .as_ref()
@@ -1083,7 +1085,7 @@ fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume)
             existing
                 .as_ref()
                 .map(|policy| policy.snapshot_root.display().to_string())
-                .unwrap_or_else(|| ".snapshots".into()),
+                .unwrap_or_else(|| "@btrfs-manager".into()),
         )
         .build();
     content.append(&labeled_widget("Snapshot root", &snapshot_root));

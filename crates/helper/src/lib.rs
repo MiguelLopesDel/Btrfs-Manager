@@ -738,61 +738,92 @@ impl<R: CommandRunner> Helper<R> {
                 "policy {policy_id} is disabled"
             )));
         }
-
         validate_policy(&policy)?;
-        let source = policy.source_path.clone();
-        validate_path(&source)?;
-        let snapshot_dir = policy_snapshot_dir(&policy);
-        std::fs::create_dir_all(&snapshot_dir)?;
-        let destination = snapshot_dir.join(format!(
-            "{}-{}",
-            sanitize_snapshot_label(&policy.source_path),
-            Utc::now().format("%Y%m%d-%H%M%S")
-        ));
-        validate_path(&destination)?;
 
-        let args = vec![
-            "subvolume".into(),
-            "snapshot".into(),
-            "-r".into(),
-            source.display().to_string(),
-            destination.display().to_string(),
+        // Resolve block device for this filesystem mountpoint.
+        let findmnt_args = vec![
+            "-n".into(), "-o".into(), "SOURCE".into(),
+            "--target".into(), policy.mountpoint.display().to_string(),
         ];
-        self.runner.run("btrfs", &args)?;
+        let device_raw = self.runner.run("findmnt", &findmnt_args)?;
+        let device = normalize_findmnt_source(device_raw.trim());
 
-        let snapshot = Snapshot {
-            id: Uuid::new_v4(),
-            source_subvolume: policy.subvolume_id.clone(),
-            path: destination.clone(),
-            created_at: Utc::now(),
-            tags: vec!["scheduled".into()],
-            origin: SnapshotOrigin::Managed,
-            state: SnapshotState::ReadOnly,
-        };
-        store.insert_managed_snapshot(Some(policy_id), &snapshot)?;
+        // Mount top-level (subvolid=5) writable to a temp dir.
+        let temp_suffix = Uuid::new_v4().simple().to_string();
+        let top = std::env::temp_dir().join(format!("btrfs-manager-ret-{temp_suffix}"));
+        std::fs::create_dir_all(&top)?;
 
-        let snapshots = store.list_managed_snapshots_for_policy(policy_id)?;
-        let keep = retention_keep_set(&snapshots, &retention_policy_from_snapshot_policy(&policy));
-        let mut deleted = Vec::new();
-        for snapshot in snapshots {
-            if keep.contains(&snapshot.id) || !snapshot.is_managed() {
-                continue;
-            }
-            if snapshot.state == SnapshotState::RollbackAnchor {
-                continue;
-            }
-            validate_path(&snapshot.path)?;
-            let args = vec![
-                "subvolume".into(),
-                "delete".into(),
-                snapshot.path.display().to_string(),
+        let result: Result<(PathBuf, Vec<PathBuf>), HelperError> = (|| {
+            let mount_args = vec![
+                "-o".into(), "subvolid=5".into(),
+                device, top.display().to_string(),
             ];
-            self.runner.run("btrfs", &args)?;
-            store.delete_managed_snapshot(snapshot.id)?;
-            deleted.push(snapshot.path);
-        }
+            self.runner.run("mount", &mount_args)?;
 
-        Ok((destination, deleted))
+            // Create snapshot container subvolume if needed.
+            let container = top.join(&policy.snapshot_root);
+            if !container.exists() {
+                self.runner.run("btrfs", &[
+                    "subvolume".into(), "create".into(),
+                    container.display().to_string(),
+                ])?;
+            }
+            let snap_dir_abs = top.join(policy_snapshot_dir(&policy));
+            std::fs::create_dir_all(&snap_dir_abs)?;
+
+            let dest_name = format!(
+                "{}-{}",
+                sanitize_snapshot_label(&policy.source_path),
+                Utc::now().format("%Y%m%d-%H%M%S")
+            );
+            let dest_abs = snap_dir_abs.join(&dest_name);
+            let source_abs = top.join(&policy.source_path);
+
+            self.runner.run("btrfs", &[
+                "subvolume".into(), "snapshot".into(), "-r".into(),
+                source_abs.display().to_string(), dest_abs.display().to_string(),
+            ])?;
+
+            // Store relative path in SQLite.
+            let rel_path = policy_snapshot_dir(&policy).join(&dest_name);
+            let snapshot = Snapshot {
+                id: Uuid::new_v4(),
+                source_subvolume: policy.subvolume_id.clone(),
+                path: rel_path.clone(),
+                created_at: Utc::now(),
+                tags: vec!["scheduled".into()],
+                origin: SnapshotOrigin::Managed,
+                state: SnapshotState::ReadOnly,
+            };
+            store.insert_managed_snapshot(Some(policy_id), &snapshot)?;
+
+            // Retention: delete old snapshots that are no longer needed.
+            let all = store.list_managed_snapshots_for_policy(policy_id)?;
+            let keep = retention_keep_set(&all, &retention_policy_from_snapshot_policy(&policy));
+            let mut deleted = Vec::new();
+            for old in all {
+                if keep.contains(&old.id) || !old.is_managed() {
+                    continue;
+                }
+                if old.state == SnapshotState::RollbackAnchor {
+                    continue;
+                }
+                let old_abs = top.join(&old.path);
+                self.runner.run("btrfs", &[
+                    "subvolume".into(), "delete".into(),
+                    old_abs.display().to_string(),
+                ])?;
+                store.delete_managed_snapshot(old.id)?;
+                deleted.push(old.path);
+            }
+
+            Ok((rel_path, deleted))
+        })();
+
+        let _ = self.runner.run("umount", &[top.display().to_string()]);
+        let _ = std::fs::remove_dir(&top);
+
+        result
     }
 
     fn write_systemd_policy_units(&self, policy: &SnapshotPolicy) -> Result<(), HelperError> {
@@ -1232,17 +1263,21 @@ fn systemd_unit_dir() -> PathBuf {
 }
 
 fn validate_policy(policy: &SnapshotPolicy) -> Result<(), HelperError> {
-    validate_path(&policy.source_path)?;
+    // source_path and snapshot_root are relative to the Btrfs volume root.
+    // mountpoint is an absolute path used to find the block device.
     validate_path(&policy.mountpoint)?;
-    if policy.snapshot_root.components().any(|component| {
-        matches!(
-            component,
-            std::path::Component::ParentDir | std::path::Component::Prefix(_)
-        )
-    }) {
-        return Err(HelperError::InvalidPolicy(
-            "snapshot root must not contain traversal".into(),
-        ));
+    for path in [&policy.source_path, &policy.snapshot_root] {
+        if path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::Prefix(_)
+            )
+        }) {
+            return Err(HelperError::InvalidPolicy(format!(
+                "policy path must not contain traversal: {}",
+                path.display()
+            )));
+        }
     }
     if policy.keep_hourly + policy.keep_daily + policy.keep_weekly + policy.keep_monthly == 0 {
         return Err(HelperError::InvalidPolicy(
@@ -1290,13 +1325,14 @@ fn retention_preview_for_policy(
     }
 }
 
+// Returns a path relative to the Btrfs volume root (used for SQLite storage
+// and preview display). Callers that need an absolute path join with the
+// top-level mount point.
 fn policy_snapshot_dir(policy: &SnapshotPolicy) -> PathBuf {
-    let root = if policy.snapshot_root.is_absolute() {
-        policy.snapshot_root.clone()
-    } else {
-        policy.mountpoint.join(&policy.snapshot_root)
-    };
-    root.join("btrfs-manager").join(policy.id.to_string())
+    policy
+        .snapshot_root
+        .join("btrfs-manager")
+        .join(policy.id.to_string())
 }
 
 fn sanitize_snapshot_label(path: &Path) -> String {
