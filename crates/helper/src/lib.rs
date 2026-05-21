@@ -1263,12 +1263,44 @@ fn path_looks_like_snapshot(path: &Path) -> bool {
 fn detect_snapshot_tool(path: &Path) -> Option<String> {
     let text = path.to_string_lossy().to_ascii_lowercase();
     if text.contains("timeshift") {
-        Some("timeshift".into())
-    } else if text.contains("snapper") {
-        Some("snapper".into())
-    } else {
-        None
+        return Some("timeshift".into());
     }
+    if text.contains("snapper") {
+        return Some("snapper".into());
+    }
+    // Snapper structural pattern: <snapshots_container>/<numeric_id>/snapshot
+    // e.g. @snapshots/265/snapshot, .snapshots/1/snapshot, @home/.snapshots/3/snapshot
+    // The tool name "snapper" never appears in these paths — match by structure instead.
+    if looks_like_snapper_snapshot(path) {
+        return Some("snapper".into());
+    }
+    None
+}
+
+// Returns true for paths matching Snapper's convention:
+//   <any_prefix>/<snapshots_container>/<numeric_id>/snapshot
+// where <snapshots_container> ends with "snapshots" (e.g. @snapshots, .snapshots).
+fn looks_like_snapper_snapshot(path: &Path) -> bool {
+    let components: Vec<_> = path.components().collect();
+    let n = components.len();
+    if n < 3 {
+        return false;
+    }
+    let leaf = components[n - 1].as_os_str().to_str().unwrap_or("");
+    if leaf != "snapshot" {
+        return false;
+    }
+    let id = components[n - 2].as_os_str().to_str().unwrap_or("");
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let container = components[n - 3]
+        .as_os_str()
+        .to_str()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    // Accept @snapshots, .snapshots, snapshots (with or without sigil prefix)
+    container.ends_with("snapshots")
 }
 
 #[cfg(test)]
@@ -1346,13 +1378,54 @@ mod tests {
 
     #[test]
     fn classifies_snapshot_containers_separately_from_snapshots() {
+        // Containers
         assert_eq!(
             classify_subvolume_kind(Path::new("@snapshots")),
             SubvolumeKind::SnapshotContainer
         );
         assert_eq!(
+            classify_subvolume_kind(Path::new(".snapshots")),
+            SubvolumeKind::SnapshotContainer
+        );
+        assert_eq!(
+            classify_subvolume_kind(Path::new("timeshift-btrfs")),
+            SubvolumeKind::SnapshotContainer
+        );
+
+        // Snapper: @snapshots/<numeric_id>/snapshot pattern
+        assert_eq!(
             classify_subvolume_kind(Path::new("@snapshots/296/snapshot")),
-            SubvolumeKind::Snapshot
+            SubvolumeKind::ExternalSnapshot {
+                tool: Some("snapper".into())
+            }
+        );
+        assert_eq!(
+            classify_subvolume_kind(Path::new("@snapshots/265/snapshot")),
+            SubvolumeKind::ExternalSnapshot {
+                tool: Some("snapper".into())
+            }
+        );
+        // Snapper: .snapshots/<id>/snapshot (openSUSE default, or Arch without @)
+        assert_eq!(
+            classify_subvolume_kind(Path::new(".snapshots/1/snapshot")),
+            SubvolumeKind::ExternalSnapshot {
+                tool: Some("snapper".into())
+            }
+        );
+        // Snapper: nested inside another subvolume (@home/.snapshots/<id>/snapshot)
+        assert_eq!(
+            classify_subvolume_kind(Path::new("@home/.snapshots/3/snapshot")),
+            SubvolumeKind::ExternalSnapshot {
+                tool: Some("snapper".into())
+            }
+        );
+
+        // Timeshift: timeshift-btrfs/snapshots/<date>/@
+        assert_eq!(
+            classify_subvolume_kind(Path::new("timeshift-btrfs/snapshots/2024-01-01_12-00-00/@")),
+            SubvolumeKind::ExternalSnapshot {
+                tool: Some("timeshift".into())
+            }
         );
         assert_eq!(
             classify_subvolume_kind(Path::new("timeshift-btrfs/snapshots/one")),
@@ -1360,9 +1433,20 @@ mod tests {
                 tool: Some("timeshift".into())
             }
         );
+
+        // Normal subvolumes — must NOT be misclassified
         assert_eq!(
             classify_subvolume_kind(Path::new("@home")),
             SubvolumeKind::Normal
+        );
+        assert_eq!(
+            classify_subvolume_kind(Path::new("@")),
+            SubvolumeKind::Normal
+        );
+        // "snapshot" leaf but non-numeric parent → not Snapper
+        assert_eq!(
+            classify_subvolume_kind(Path::new("backups/important/snapshot")),
+            SubvolumeKind::Snapshot
         );
     }
 

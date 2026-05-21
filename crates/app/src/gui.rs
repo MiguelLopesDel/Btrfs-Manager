@@ -9,7 +9,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashSet, hash_map::DefaultHasher};
+use std::collections::{BTreeMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::process::Command;
@@ -559,108 +559,43 @@ fn render_inventory(
         .filter(|subvolume| matches_query(&subvolume.path, query))
         .collect();
 
-    append_section_header(list, &format!("Snapshots ({})", snapshots.len()));
     if snapshots.is_empty() {
+        append_section_header(list, "Snapshots (0)");
         append_info_row(
             list,
             "No snapshots found",
             "Create or import snapshots to show them here",
         );
     } else {
-        for snapshot in snapshots {
-            let source_mountpoint = inventory.mountpoint.clone();
-            let relative_path = snapshot.path.clone();
-            let target = browse_mount_target(&relative_path);
-            let is_mounted = state.mounted_snapshots.borrow().contains(&target);
-            let row = libadwaita::ActionRow::builder()
-                .title(snapshot.path.display().to_string())
-                .subtitle(snapshot_subtitle(snapshot.id.0, is_mounted, &target))
-                .build();
-            let browse = gtk4::Button::builder()
-                .icon_name("folder-open-symbolic")
-                .tooltip_text("Browse read-only")
-                .valign(gtk4::Align::Center)
-                .sensitive(!is_mounted)
-                .build();
-            let unmount = gtk4::Button::builder()
-                .icon_name("media-eject-symbolic")
-                .tooltip_text("Unmount browse view")
-                .valign(gtk4::Align::Center)
-                .sensitive(is_mounted)
-                .build();
-
-            let row_for_browse = row.clone();
-            let browse_for_browse = browse.clone();
-            let unmount_for_browse = unmount.clone();
-            let state_for_browse = state.clone();
-            let snapshot_id = snapshot.id.0;
-            browse.connect_clicked(move |_| {
-                match browse_snapshot_readonly(source_mountpoint.clone(), relative_path.clone()) {
-                    Ok(mounted) => {
-                        state_for_browse
-                            .mounted_snapshots
-                            .borrow_mut()
-                            .insert(mounted.target.clone());
-                        state_for_browse
-                            .session_mounts
-                            .borrow_mut()
-                            .extend(mounted.created_mounts.iter().cloned());
-                        row_for_browse.set_subtitle(&snapshot_subtitle(
-                            snapshot_id,
-                            true,
-                            &mounted.target,
-                        ));
-                        browse_for_browse.set_sensitive(false);
-                        unmount_for_browse.set_sensitive(true);
-                        show_toast(
-                            &state_for_browse.toast_overlay,
-                            "Snapshot mounted read-only",
-                        );
-                    }
-                    Err(err) => show_toast(
-                        &state_for_browse.toast_overlay,
-                        &format!("Failed to browse snapshot: {err}"),
-                    ),
+        // Group: managed snapshots first, then external tools sorted alphabetically.
+        let mut managed: Vec<&Subvolume> = Vec::new();
+        let mut by_tool: BTreeMap<String, Vec<&Subvolume>> = BTreeMap::new();
+        for snapshot in &snapshots {
+            match &snapshot.kind {
+                SubvolumeKind::Snapshot => managed.push(snapshot),
+                SubvolumeKind::ExternalSnapshot { tool } => {
+                    let label = capitalize_first(tool.as_deref().unwrap_or("external"));
+                    by_tool.entry(label).or_default().push(snapshot);
                 }
-            });
-
-            let row_for_unmount = row.clone();
-            let browse_for_unmount = browse.clone();
-            let unmount_for_unmount = unmount.clone();
-            let state_for_unmount = state.clone();
-            let target_for_unmount = target.clone();
-            unmount.connect_clicked(move |_| {
-                match handle_privileged(HelperRequest::UnmountSnapshot {
-                    target: target_for_unmount.clone(),
-                }) {
-                    Ok(_) => {
-                        state_for_unmount
-                            .mounted_snapshots
-                            .borrow_mut()
-                            .remove(&target_for_unmount);
-                        row_for_unmount.set_subtitle(&snapshot_subtitle(
-                            snapshot_id,
-                            false,
-                            &target_for_unmount,
-                        ));
-                        browse_for_unmount.set_sensitive(true);
-                        unmount_for_unmount.set_sensitive(false);
-                        show_toast(&state_for_unmount.toast_overlay, "Snapshot unmounted");
-                    }
-                    Err(err) => show_toast(
-                        &state_for_unmount.toast_overlay,
-                        &format!("Failed to unmount snapshot: {err}"),
-                    ),
-                }
-            });
-            row.add_suffix(&browse);
-            row.add_suffix(&unmount);
-            list.append(&row);
+                _ => {}
+            }
+        }
+        if !managed.is_empty() {
+            append_section_header(list, &format!("Managed ({})", managed.len()));
+            for snapshot in &managed {
+                render_snapshot_row(list, snapshot, &inventory.mountpoint, state.clone());
+            }
+        }
+        for (label, group) in &by_tool {
+            append_section_header(list, &format!("{label} ({})", group.len()));
+            for snapshot in group {
+                render_snapshot_row(list, snapshot, &inventory.mountpoint, state.clone());
+            }
         }
     }
 
     append_section_header(list, &format!("Subvolumes ({})", subvolumes.len()));
-    for subvolume in subvolumes {
+    for subvolume in &subvolumes {
         let mountpoint = inventory.mountpoint.clone();
         let row = libadwaita::ActionRow::builder()
             .title(subvolume.path.display().to_string())
@@ -682,6 +617,108 @@ fn render_inventory(
         });
         row.add_suffix(&schedule);
         list.append(&row);
+    }
+}
+
+fn render_snapshot_row(
+    list: &gtk4::ListBox,
+    snapshot: &Subvolume,
+    mountpoint: &std::path::Path,
+    state: UiState,
+) {
+    let source_mountpoint = mountpoint.to_path_buf();
+    let relative_path = snapshot.path.clone();
+    let target = browse_mount_target(&relative_path);
+    let is_mounted = state.mounted_snapshots.borrow().contains(&target);
+    let row = libadwaita::ActionRow::builder()
+        .title(snapshot.path.display().to_string())
+        .subtitle(snapshot_subtitle(snapshot.id.0, is_mounted, &target))
+        .build();
+    let browse = gtk4::Button::builder()
+        .icon_name("folder-open-symbolic")
+        .tooltip_text("Browse read-only")
+        .valign(gtk4::Align::Center)
+        .sensitive(!is_mounted)
+        .build();
+    let unmount = gtk4::Button::builder()
+        .icon_name("media-eject-symbolic")
+        .tooltip_text("Unmount browse view")
+        .valign(gtk4::Align::Center)
+        .sensitive(is_mounted)
+        .build();
+
+    let row_for_browse = row.clone();
+    let browse_for_browse = browse.clone();
+    let unmount_for_browse = unmount.clone();
+    let state_for_browse = state.clone();
+    let snapshot_id = snapshot.id.0;
+    browse.connect_clicked(move |_| {
+        match browse_snapshot_readonly(source_mountpoint.clone(), relative_path.clone()) {
+            Ok(mounted) => {
+                state_for_browse
+                    .mounted_snapshots
+                    .borrow_mut()
+                    .insert(mounted.target.clone());
+                state_for_browse
+                    .session_mounts
+                    .borrow_mut()
+                    .extend(mounted.created_mounts.iter().cloned());
+                row_for_browse.set_subtitle(&snapshot_subtitle(
+                    snapshot_id,
+                    true,
+                    &mounted.target,
+                ));
+                browse_for_browse.set_sensitive(false);
+                unmount_for_browse.set_sensitive(true);
+                show_toast(&state_for_browse.toast_overlay, "Snapshot mounted read-only");
+            }
+            Err(err) => show_toast(
+                &state_for_browse.toast_overlay,
+                &format!("Failed to browse snapshot: {err}"),
+            ),
+        }
+    });
+
+    let row_for_unmount = row.clone();
+    let browse_for_unmount = browse.clone();
+    let unmount_for_unmount = unmount.clone();
+    let state_for_unmount = state.clone();
+    let target_for_unmount = target.clone();
+    unmount.connect_clicked(move |_| {
+        match handle_privileged(HelperRequest::UnmountSnapshot {
+            target: target_for_unmount.clone(),
+        }) {
+            Ok(_) => {
+                state_for_unmount
+                    .mounted_snapshots
+                    .borrow_mut()
+                    .remove(&target_for_unmount);
+                row_for_unmount.set_subtitle(&snapshot_subtitle(
+                    snapshot_id,
+                    false,
+                    &target_for_unmount,
+                ));
+                browse_for_unmount.set_sensitive(true);
+                unmount_for_unmount.set_sensitive(false);
+                show_toast(&state_for_unmount.toast_overlay, "Snapshot unmounted");
+            }
+            Err(err) => show_toast(
+                &state_for_unmount.toast_overlay,
+                &format!("Failed to unmount snapshot: {err}"),
+            ),
+        }
+    });
+
+    row.add_suffix(&browse);
+    row.add_suffix(&unmount);
+    list.append(&row);
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
     }
 }
 

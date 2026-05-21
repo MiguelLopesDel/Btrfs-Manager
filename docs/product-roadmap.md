@@ -180,9 +180,9 @@ Tarefas:
   ativo.
 - [~] Resolver paths quando `/` está montado como `subvol=@`.
 - [x] Distinguir subvolumes, containers, snapshots reais e snapshots externos.
-- [~] Detectar Snapper, Timeshift, grub-btrfs e refind-btrfs de forma
+- [x] Detectar Snapper, Timeshift, grub-btrfs e refind-btrfs de forma
   conservadora.
-- [~] UI com selector de filesystem sem mountpoint hardcoded.
+- [x] UI com selector de filesystem sem mountpoint hardcoded.
 - [ ] Erros de discovery padronizados e traduzíveis.
 - [ ] Teste de host real documentado com output esperado.
 
