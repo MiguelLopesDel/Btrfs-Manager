@@ -918,20 +918,9 @@ fn open_create_snapshot_dialog(
     mountpoint: PathBuf,
     subvolume: Subvolume,
 ) {
-    let default_source = mountpoint.join(&subvolume.path);
-    let default_dest = {
-        let ts = chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S");
-        let snap_root = if mountpoint.join(".snapshots").exists() {
-            mountpoint.join(".snapshots")
-        } else {
-            mountpoint.join("@snapshots")
-        };
-        snap_root.join(format!("managed-{ts}"))
-    };
-
     let window = libadwaita::Window::builder()
         .title("Create Snapshot")
-        .default_width(480)
+        .default_width(420)
         .modal(true)
         .build();
 
@@ -958,17 +947,21 @@ fn open_create_snapshot_dialog(
         .build();
     content.append(&title);
 
-    let source_entry = gtk4::Entry::builder()
-        .text(default_source.display().to_string())
+    // Snapshot root is relative to the Btrfs volume root (e.g. "@snapshots").
+    // The helper will mount the top-level, find this dir, and create the snapshot there.
+    let snap_root_entry = gtk4::Entry::builder()
+        .text("@snapshots")
         .hexpand(true)
         .build();
-    content.append(&labeled_widget("Source path", &source_entry));
+    content.append(&labeled_widget("Snapshot root", &snap_root_entry));
 
-    let dest_entry = gtk4::Entry::builder()
-        .text(default_dest.display().to_string())
-        .hexpand(true)
+    let info = gtk4::Label::builder()
+        .label("Snapshot will be created as managed-<timestamp> inside the snapshot root.")
+        .halign(gtk4::Align::Start)
+        .wrap(true)
+        .css_classes(["caption", "dim-label"])
         .build();
-    content.append(&labeled_widget("Destination", &dest_entry));
+    content.append(&info);
 
     let tags_entry = gtk4::Entry::builder()
         .placeholder_text("Optional: comma-separated tags")
@@ -998,8 +991,7 @@ fn open_create_snapshot_dialog(
 
     let window_for_create = window.clone();
     create_btn.connect_clicked(move |_| {
-        let source = PathBuf::from(source_entry.text().as_str());
-        let destination = PathBuf::from(dest_entry.text().as_str());
+        let snapshot_root = PathBuf::from(snap_root_entry.text().as_str().trim());
         let tags: Vec<String> = tags_entry
             .text()
             .split(',')
@@ -1008,8 +1000,9 @@ fn open_create_snapshot_dialog(
             .collect();
 
         match handle_privileged(HelperRequest::CreateManagedSnapshot {
-            source,
-            destination,
+            mountpoint: mountpoint.clone(),
+            subvolume_path: subvolume.path.clone(),
+            snapshot_root,
             tags,
         }) {
             Ok(_) => {
@@ -1017,7 +1010,10 @@ fn open_create_snapshot_dialog(
                 show_toast(&state.toast_overlay, "Snapshot created");
                 load_mountpoint(&list, state.clone(), "", mountpoint.clone());
             }
-            Err(err) => show_toast(&state.toast_overlay, &format!("Failed to create snapshot: {err}")),
+            Err(err) => show_toast(
+                &state.toast_overlay,
+                &format!("Failed to create snapshot: {err}"),
+            ),
         }
     });
 

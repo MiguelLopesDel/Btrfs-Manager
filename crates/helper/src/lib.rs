@@ -72,8 +72,12 @@ pub enum HelperRequest {
     },
     CleanupManagedMounts,
     CreateManagedSnapshot {
-        source: PathBuf,
-        destination: PathBuf,
+        // filesystem mountpoint (e.g. "/")
+        mountpoint: PathBuf,
+        // subvolume path relative to the Btrfs volume root (e.g. "@cache", "@")
+        subvolume_path: PathBuf,
+        // container subvolume relative to the Btrfs volume root (e.g. "@snapshots")
+        snapshot_root: PathBuf,
         tags: Vec<String>,
     },
     ListManagedSnapshots,
@@ -351,34 +355,70 @@ impl<R: CommandRunner> Helper<R> {
                 })
             }
             HelperRequest::CreateManagedSnapshot {
-                source,
-                destination,
+                mountpoint,
+                subvolume_path,
+                snapshot_root,
                 tags,
             } => {
-                validate_path(&source)?;
-                validate_path(&destination)?;
-                let args = vec![
-                    "subvolume".into(),
-                    "snapshot".into(),
-                    "-r".into(),
-                    source.display().to_string(),
-                    destination.display().to_string(),
+                validate_path(&mountpoint)?;
+                // Resolve the block device for this mountpoint
+                let findmnt_args = vec![
+                    "-n".into(), "-o".into(), "SOURCE".into(),
+                    "--target".into(), mountpoint.display().to_string(),
                 ];
-                self.runner.run("btrfs", &args)?;
-                let snapshot = Snapshot {
-                    id: Uuid::new_v4(),
-                    source_subvolume: SubvolumeId(0),
-                    path: destination.clone(),
-                    created_at: Utc::now(),
-                    tags,
-                    origin: SnapshotOrigin::Managed,
-                    state: SnapshotState::ReadOnly,
-                };
+                let device_raw = self.runner.run("findmnt", &findmnt_args)?;
+                let device = normalize_findmnt_source(device_raw.trim());
+
+                // Mount the Btrfs top-level (subvolid=5) writable to a unique temp dir.
+                // Using a dedicated temp dir keeps this mount invisible to browse cleanup.
+                let temp_suffix = Uuid::new_v4().simple().to_string();
+                let top = std::env::temp_dir()
+                    .join(format!("btrfs-manager-snap-{temp_suffix}"));
+                std::fs::create_dir_all(&top)?;
+
+                let snapshot_result: Result<Snapshot, HelperError> = (|| {
+                    let mount_args = vec![
+                        "-o".into(), "subvolid=5".into(),
+                        device, top.display().to_string(),
+                    ];
+                    self.runner.run("mount", &mount_args)?;
+
+                    let source = top.join(&subvolume_path);
+                    let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S");
+                    let dest_name = format!("managed-{timestamp}");
+                    let dest_parent = top.join(&snapshot_root);
+                    std::fs::create_dir_all(&dest_parent)?;
+                    let dest = dest_parent.join(&dest_name);
+
+                    let snap_args = vec![
+                        "subvolume".into(), "snapshot".into(), "-r".into(),
+                        source.display().to_string(), dest.display().to_string(),
+                    ];
+                    self.runner.run("btrfs", &snap_args)?;
+
+                    // Path stored in SQLite is relative to the Btrfs volume root
+                    let rel_path = snapshot_root.join(dest_name);
+                    Ok(Snapshot {
+                        id: Uuid::new_v4(),
+                        source_subvolume: SubvolumeId(0),
+                        path: rel_path,
+                        created_at: Utc::now(),
+                        tags,
+                        origin: SnapshotOrigin::Managed,
+                        state: SnapshotState::ReadOnly,
+                    })
+                })();
+
+                // Always unmount the temp mount regardless of snapshot result.
+                let _ = self.runner.run("umount", &[top.display().to_string()]);
+                let _ = std::fs::remove_dir(&top);
+
+                let snapshot = snapshot_result?;
                 StateStore::open()?.insert_managed_snapshot(None, &snapshot)?;
-                tracing::info!(destination = %destination.display(), "managed snapshot created");
+                tracing::info!(path = %snapshot.path.display(), "managed snapshot created");
                 Ok(HelperResponse {
                     ok: true,
-                    message: format!("snapshot created at {}", destination.display()),
+                    message: format!("snapshot created at {}", snapshot.path.display()),
                     data: Some(serde_json::to_value(&snapshot)?),
                 })
             }
