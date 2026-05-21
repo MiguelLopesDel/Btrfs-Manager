@@ -1429,6 +1429,7 @@ fn path_looks_like_snapshot(path: &Path) -> bool {
         || text.contains("snapshots/")
         || text.contains(".snapshots/")
         || text.ends_with("/snapshot")
+        || text.contains("btrfs-manager/")
 }
 
 fn detect_snapshot_tool(path: &Path) -> Option<String> {
@@ -1603,6 +1604,12 @@ mod tests {
             SubvolumeKind::ExternalSnapshot {
                 tool: Some("timeshift".into())
             }
+        );
+
+        // Our managed snapshots under @btrfs-manager
+        assert_eq!(
+            classify_subvolume_kind(Path::new("@btrfs-manager/managed-2026-05-21_16-34-31")),
+            SubvolumeKind::Snapshot
         );
 
         // Normal subvolumes — must NOT be misclassified
