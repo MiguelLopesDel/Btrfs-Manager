@@ -387,7 +387,18 @@ impl<R: CommandRunner> Helper<R> {
                     let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S");
                     let dest_name = format!("managed-{timestamp}");
                     let dest_parent = top.join(&snapshot_root);
-                    std::fs::create_dir_all(&dest_parent)?;
+                    // Create the container as a proper Btrfs subvolume if it doesn't
+                    // exist yet — same approach as Snapper (@snapshots) and Timeshift
+                    // (timeshift-btrfs). Using a subvolume (not a plain dir) allows
+                    // independent mounting and btrfs send/receive.
+                    if !dest_parent.exists() {
+                        let create_args = vec![
+                            "subvolume".into(),
+                            "create".into(),
+                            dest_parent.display().to_string(),
+                        ];
+                        self.runner.run("btrfs", &create_args)?;
+                    }
                     let dest = dest_parent.join(&dest_name);
 
                     let snap_args = vec![
@@ -1407,6 +1418,7 @@ fn path_looks_like_snapshot_container(path: &Path) -> bool {
             | "timeshift"
             | "timeshift-btrfs"
             | "btrfs-manager-snapshots"
+            | "@btrfs-manager"
     )
 }
 
