@@ -1,6 +1,7 @@
 use crate::{Helper, HelperRequest, SystemCommandRunner};
 use std::process::Command;
 use zbus::{Connection, fdo, interface, message::Header};
+use tracing;
 
 pub const SERVICE_NAME: &str = "org.btrfsmanager.Helper";
 pub const OBJECT_PATH: &str = "/org/btrfsmanager/Helper";
@@ -16,19 +17,16 @@ pub const ACTION_POLICY_READ: &str = "org.btrfsmanager.helper.policy.read";
 pub const ACTION_POLICY_WRITE: &str = "org.btrfsmanager.helper.policy.write";
 
 pub struct HelperService {
-    helper: Helper<SystemCommandRunner>,
     connection: Connection,
 }
 
 impl HelperService {
     pub fn new(connection: Connection) -> Self {
-        Self {
-            helper: Helper::new(SystemCommandRunner),
-            connection,
-        }
+        Self { connection }
     }
 
-    async fn authorize(&self, header: &Header<'_>, request: &HelperRequest) -> fdo::Result<()> {
+    // Returns the caller's UID on success so the helper can scope mount roots correctly.
+    async fn authorize(&self, header: &Header<'_>, request: &HelperRequest) -> fdo::Result<u32> {
         let sender = header
             .sender()
             .ok_or_else(|| fdo::Error::AuthFailed("D-Bus sender is missing".into()))?;
@@ -47,18 +45,30 @@ impl HelperService {
         let start_time = linux_process_start_time(pid).map_err(to_failed)?;
         let subject = format!("{pid},{start_time},{uid}");
         let action = action_for_request(request);
-        let status = Command::new("pkcheck")
-            .arg("--action-id")
-            .arg(action)
-            .arg("--process")
-            .arg(subject)
-            .arg("--allow-user-interaction")
-            .status()
-            .map_err(to_failed)?;
 
-        if status.success() {
-            Ok(())
+        tracing::debug!(uid, pid, action, "checking Polkit authorization");
+
+        // pkcheck is a blocking subprocess — run it off the async executor to
+        // avoid blocking tokio worker threads during authentication prompts.
+        let authorized = tokio::task::spawn_blocking(move || {
+            Command::new("pkcheck")
+                .arg("--action-id")
+                .arg(action)
+                .arg("--process")
+                .arg(&subject)
+                .arg("--allow-user-interaction")
+                .status()
+                .map(|s| s.success())
+        })
+        .await
+        .map_err(|e| fdo::Error::Failed(e.to_string()))?
+        .map_err(to_failed)?;
+
+        if authorized {
+            tracing::debug!(uid, action, "Polkit authorized");
+            Ok(uid)
         } else {
+            tracing::warn!(uid, action, "Polkit denied");
             Err(fdo::Error::AuthFailed(format!(
                 "Polkit denied action {action}"
             )))
@@ -75,12 +85,28 @@ impl HelperService {
     ) -> fdo::Result<String> {
         let request = serde_json::from_str::<HelperRequest>(request_json)
             .map_err(|err| fdo::Error::InvalidArgs(err.to_string()))?;
-        self.authorize(&header, &request).await?;
-        let response = self
-            .helper
-            .handle(request)
-            .map_err(|err| fdo::Error::Failed(err.to_string()))?;
-        serde_json::to_string(&response).map_err(to_failed)
+        let action = action_for_request(&request);
+        let uid = self.authorize(&header, &request).await?;
+        let request_debug = format!("{request:?}");
+        tracing::info!(uid, action, "handling request");
+        // Helper::handle() executes btrfs/mount/systemctl — blocking calls that
+        // must not run on the async executor.
+        let result =
+            tokio::task::spawn_blocking(move || {
+                Helper::new(SystemCommandRunner).with_caller_uid(uid).handle(request)
+            })
+                .await
+                .map_err(|e| fdo::Error::Failed(e.to_string()))?;
+        match result {
+            Ok(response) => {
+                tracing::debug!(uid, action, "request completed: {}", response.message);
+                serde_json::to_string(&response).map_err(to_failed)
+            }
+            Err(err) => {
+                tracing::error!(uid, action, request = %request_debug, error = %err, "request failed");
+                Err(fdo::Error::Failed(err.to_string()))
+            }
+        }
     }
 }
 

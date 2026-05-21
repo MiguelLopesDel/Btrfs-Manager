@@ -26,6 +26,21 @@ package() {
   install -Dm644 packaging/dbus/org.btrfsmanager.Helper.conf "$pkgdir/usr/share/dbus-1/system.d/org.btrfsmanager.Helper.conf"
   install -Dm644 packaging/dbus/org.btrfsmanager.Helper.service "$pkgdir/usr/share/dbus-1/system-services/org.btrfsmanager.Helper.service"
   install -Dm644 packaging/polkit/org.btrfsmanager.helper.policy "$pkgdir/usr/share/polkit-1/actions/org.btrfsmanager.helper.policy"
+  install -Dm644 packaging/systemd/btrfs-manager-helper.service "$pkgdir/usr/lib/systemd/system/btrfs-manager-helper.service"
   install -Dm644 packaging/systemd/btrfs-manager-snapshot@.service "$pkgdir/usr/lib/systemd/system/btrfs-manager-snapshot@.service"
   install -Dm644 packaging/systemd/btrfs-manager-snapshot@.timer "$pkgdir/usr/lib/systemd/system/btrfs-manager-snapshot@.timer"
+}
+
+post_install() {
+  systemctl daemon-reload
+  systemctl enable --now btrfs-manager-helper.service
+}
+
+post_upgrade() {
+  systemctl daemon-reload
+  systemctl restart btrfs-manager-helper.service
+}
+
+post_remove() {
+  systemctl daemon-reload
 }

@@ -16,6 +16,7 @@ use std::process::Command;
 use std::rc::Rc;
 use uuid::Uuid;
 
+use anyhow::Context as _;
 use crate::dbus_client;
 
 #[derive(Clone)]
@@ -1052,21 +1053,47 @@ fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume)
     window.present();
 }
 
+fn open_in_filemanager(path: &std::path::Path) -> anyhow::Result<()> {
+    // When the process is running as root via sudo (dev sandbox), open the file
+    // manager as the original user to avoid "running as root" warnings from apps
+    // like Dolphin. SUDO_USER is set by sudo and preserved with sudo -E.
+    if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+        if !sudo_user.is_empty() {
+            Command::new("runuser")
+                .args(["-u", &sudo_user, "--", "xdg-open"])
+                .arg(path)
+                .spawn()?;
+            return Ok(());
+        }
+    }
+    Command::new("xdg-open").arg(path).spawn()?;
+    Ok(())
+}
+
 fn browse_snapshot_readonly(
     mountpoint: PathBuf,
     relative_path: PathBuf,
 ) -> anyhow::Result<MountedBrowse> {
+    tracing::debug!(
+        mountpoint = %mountpoint.display(),
+        relative_path = %relative_path.display(),
+        "browse_snapshot_readonly: resolving path"
+    );
     let resolved = resolve_subvolume_path(&mountpoint, &relative_path)?;
     let target = browse_mount_target(&relative_path);
-    std::fs::create_dir_all(&target)?;
+    tracing::debug!(source = %resolved.source.display(), target = %target.display(), "browse: creating target dir");
+    let target = ensure_browse_target(&relative_path)?;
+    tracing::debug!("browse: pre-unmount existing target (ignore errors)");
     let _ = handle_privileged(HelperRequest::UnmountSnapshot {
         target: target.clone(),
     });
+    tracing::debug!("browse: mounting snapshot read-only");
     handle_privileged(HelperRequest::MountSnapshot {
         source: resolved.source,
         target: target.clone(),
     })?;
-    Command::new("xdg-open").arg(&target).spawn()?;
+    tracing::debug!(target = %target.display(), "browse: opening file manager");
+    open_in_filemanager(&target)?;
     let mut created_mounts = resolved.created_mounts;
     created_mounts.push(target.clone());
     Ok(MountedBrowse {
@@ -1090,7 +1117,9 @@ fn resolve_subvolume_path(
     relative_path: &std::path::Path,
 ) -> anyhow::Result<ResolvedSubvolumePath> {
     let direct = mountpoint.join(relative_path);
+    tracing::debug!(direct = %direct.display(), "resolve: checking direct path");
     if direct.exists() {
+        tracing::debug!("resolve: direct path exists, using it");
         return Ok(ResolvedSubvolumePath {
             source: direct,
             created_mounts: Vec::new(),
@@ -1098,6 +1127,7 @@ fn resolve_subvolume_path(
     }
 
     let top_level = top_level_mount_target(mountpoint);
+    tracing::debug!(top_level = %top_level.display(), "resolve: direct path missing, mounting top-level");
     std::fs::create_dir_all(&top_level)?;
     let mut created_mounts = Vec::new();
     if !top_level.join(relative_path).exists() {
@@ -1109,6 +1139,7 @@ fn resolve_subvolume_path(
     }
 
     let resolved = top_level.join(relative_path);
+    tracing::debug!(resolved = %resolved.display(), exists = resolved.exists(), "resolve: checking top-level path");
     if resolved.exists() {
         Ok(ResolvedSubvolumePath {
             source: resolved,
@@ -1124,4 +1155,24 @@ fn resolve_subvolume_path(
 
 fn browse_mount_target(source: &std::path::Path) -> PathBuf {
     browse_mount_root().join(short_snapshot_mount_name(source))
+}
+
+// Creates the browse target directory, falling back to /tmp if the XDG path is
+// not writable (e.g., a previous session ran with sudo -E and created the parent
+// owned by root).
+fn ensure_browse_target(relative_path: &std::path::Path) -> anyhow::Result<PathBuf> {
+    let preferred = browse_mount_target(relative_path);
+    if std::fs::create_dir_all(&preferred).is_ok() {
+        return Ok(preferred);
+    }
+    tracing::warn!(
+        preferred = %preferred.display(),
+        "XDG browse dir not writable (parent may be root-owned); falling back to /tmp"
+    );
+    let fallback = std::env::temp_dir()
+        .join("btrfs-manager-browse")
+        .join(short_snapshot_mount_name(relative_path));
+    std::fs::create_dir_all(&fallback)
+        .with_context(|| format!("creating browse dir {}", fallback.display()))?;
+    Ok(fallback)
 }

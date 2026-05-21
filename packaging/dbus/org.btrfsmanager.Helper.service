@@ -2,3 +2,4 @@
 Name=org.btrfsmanager.Helper
 Exec=/usr/lib/btrfs-manager/btrfs-manager-helper service
 User=root
+SystemdService=btrfs-manager-helper.service

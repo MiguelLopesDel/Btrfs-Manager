@@ -55,6 +55,7 @@ if [ -z "$MKFS_BTRFS" ]; then
 fi
 command -v sudo >/dev/null 2>&1 || fail "sudo is required for mount and btrfs operations"
 command -v cargo >/dev/null 2>&1 || fail "cargo is missing from this user's PATH. Install Rust/Cargo or open a shell where cargo works."
+command -v jq >/dev/null 2>&1 || fail "jq is required for JSON output verification"
 
 echo "==> Building helper"
 cargo build -p btrfs-manager-helper -p btrfs-manager-app --no-default-features
@@ -71,6 +72,14 @@ sudo mkdir -p "$MOUNTPOINT"
 sudo mount -o loop "$IMAGE" "$MOUNTPOINT" || fail "failed to mount loopback image. The container may not expose loop devices."
 mountpoint -q "$MOUNTPOINT" || fail "loopback mountpoint is not mounted after mount command"
 sudo chown "$(id -u):$(id -g)" "$MOUNTPOINT"
+
+echo "==> Testing discover-filesystems"
+DISCOVERY=$(sudo "$HELPER" discover-filesystems)
+echo "$DISCOVERY" | jq . >/dev/null || fail "discover-filesystems did not return valid JSON"
+FOUND_MOUNT=$(echo "$DISCOVERY" | jq -r ".data.filesystems[].mounts[] | select(.mountpoint == \"$MOUNTPOINT\") | .mountpoint" 2>/dev/null | head -1)
+[ "$FOUND_MOUNT" = "$MOUNTPOINT" ] || fail "discover-filesystems did not find test mountpoint $MOUNTPOINT (found: '${FOUND_MOUNT:-none}')"
+FS_UUID=$(echo "$DISCOVERY" | jq -r ".data.filesystems[] | select(.mounts[].mountpoint == \"$MOUNTPOINT\") | .id" 2>/dev/null | head -1)
+[ -n "$FS_UUID" ] || fail "discover-filesystems found no UUID for test filesystem"
 
 echo "==> Creating test subvolumes and files"
 mkdir -p "$MOUNTPOINT/snapshots"
@@ -108,6 +117,15 @@ sudo "$HELPER" list-subvolumes "$MOUNTPOINT"
 echo "==> Listing subvolumes through app shell"
 sudo target/debug/btrfs-manager-app list --mountpoint "$MOUNTPOINT"
 
+echo "==> Verifying initial subvolume classification"
+INIT_INV=$(sudo "$HELPER" list-subvolumes "$MOUNTPOINT")
+SNAP1_KIND=$(echo "$INIT_INV" | jq -r '.data.subvolumes[] | select(.path == "snapshots/snap-1") | .kind')
+[ "$SNAP1_KIND" = "Snapshot" ] || fail "snapshots/snap-1 should be Snapshot, got: '${SNAP1_KIND}'"
+SNAP2_KIND=$(echo "$INIT_INV" | jq -r '.data.subvolumes[] | select(.path == "snapshots/snap-2") | .kind')
+[ "$SNAP2_KIND" = "Snapshot" ] || fail "snapshots/snap-2 should be Snapshot, got: '${SNAP2_KIND}'"
+DATA_KIND=$(echo "$INIT_INV" | jq -r '.data.subvolumes[] | select(.path == "@data") | .kind')
+[ "$DATA_KIND" = "Normal" ] || fail "@data should be Normal, got: '${DATA_KIND}'"
+
 echo "==> Temporarily unlocking and locking first snapshot"
 sudo "$HELPER" set-readonly "$MOUNTPOINT/snapshots/snap-1" false
 SNAP_RW="$(sudo btrfs property get "$MOUNTPOINT/snapshots/snap-1" ro)"
@@ -137,6 +155,15 @@ sudo btrfs subvolume create "$MOUNTPOINT/@snapshots" >/dev/null
 sudo chown -R "$(id -u):$(id -g)" "$MOUNTPOINT/@" "$MOUNTPOINT/@snapshots"
 mkdir -p "$MOUNTPOINT/@snapshots/296"
 sudo btrfs subvolume snapshot -r "$MOUNTPOINT/@" "$MOUNTPOINT/@snapshots/296/snapshot" >/dev/null
+
+echo "==> Verifying @snapshots container and snapshot classification"
+FULL_INV=$(sudo "$HELPER" list-subvolumes "$MOUNTPOINT")
+CONTAINER_KIND=$(echo "$FULL_INV" | jq -r '.data.subvolumes[] | select(.path == "@snapshots") | .kind')
+[ "$CONTAINER_KIND" = "SnapshotContainer" ] || fail "@snapshots should be SnapshotContainer, got: '${CONTAINER_KIND}'"
+ROOT_SNAP_KIND=$(echo "$FULL_INV" | jq -r '.data.subvolumes[] | select(.path == "@snapshots/296/snapshot") | .kind')
+[ "$ROOT_SNAP_KIND" = "Snapshot" ] || fail "@snapshots/296/snapshot should be Snapshot, got: '${ROOT_SNAP_KIND}'"
+AT_KIND=$(echo "$FULL_INV" | jq -r '.data.subvolumes[] | select(.path == "@") | .kind')
+[ "$AT_KIND" = "Normal" ] || fail "@ should be Normal, got: '${AT_KIND}'"
 
 sudo umount "$MOUNTPOINT"
 sudo mount -o loop,subvol=@ "$IMAGE" "$MOUNTPOINT"

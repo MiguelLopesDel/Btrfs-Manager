@@ -1,0 +1,14 @@
+[Unit]
+Description=Btrfs Manager Privileged Helper
+Documentation=https://example.invalid/btrfs-manager
+After=dbus.service
+
+[Service]
+Type=dbus
+BusName=org.btrfsmanager.Helper
+ExecStart=/usr/lib/btrfs-manager/btrfs-manager-helper service
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

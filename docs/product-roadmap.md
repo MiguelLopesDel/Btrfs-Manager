@@ -160,13 +160,13 @@ Tarefas:
 - [x] Criar teste que falha se `crates/app` invocar `pkexec`, `btrfs`, `mount`,
   `umount` ou `systemctl`.
 - [x] Criar script de validação de instalação D-Bus/Polkit para host real.
-- [ ] Testar serviço instalado no system bus com Polkit em host real.
+- [x] Testar serviço instalado no system bus com Polkit em host real.
 
 Aceite:
 
 - [x] Abrir a GUI instalada não chama `pkexec`.
-- [ ] Discovery/listagem funcionam via D-Bus/Polkit no host real.
-- [ ] Operações privilegiadas pedem autenticação apenas na ação correta.
+- [x] Discovery/listagem funcionam via D-Bus/Polkit no host real.
+- [x] Operações privilegiadas pedem autenticação apenas na ação correta.
 - [x] Se o serviço estiver ausente, o erro da GUI explica como instalar/iniciar.
 - [x] Testes e quality gates passam localmente.
 
@@ -176,7 +176,7 @@ Objetivo: a aplicação entende o sistema Btrfs antes de permitir mutações.
 
 Tarefas:
 
-- [~] Descobrir filesystems Btrfs com UUID, devices, mountpoints e subvolume
+- [x] Descobrir filesystems Btrfs com UUID, devices, mountpoints e subvolume
   ativo.
 - [~] Resolver paths quando `/` está montado como `subvol=@`.
 - [x] Distinguir subvolumes, containers, snapshots reais e snapshots externos.
@@ -188,11 +188,11 @@ Tarefas:
 
 Aceite:
 
-- [ ] No loopback, lista subvolumes e snapshots corretamente.
+- [x] No loopback, lista subvolumes e snapshots corretamente.
 - [ ] No host root Btrfs, lista subvolumes sem erro de permissão na GUI.
-- [ ] `@snapshots` aparece como container, não como snapshot.
-- [ ] Paths usados em browse/mount são válidos.
-- [ ] Testes e quality gates passam.
+- [x] `@snapshots` aparece como container, não como snapshot.
+- [x] Paths usados em browse/mount são válidos.
+- [x] Testes e quality gates passam.
 
 ## Fase 3: Browse Read-Only De Snapshots
 
@@ -200,15 +200,15 @@ Objetivo: navegar snapshots com segurança e cleanup previsível.
 
 Tarefas:
 
-- [~] Montar snapshot como read-only em path gerenciado.
-- [~] Abrir snapshot no file manager.
+- [x] Montar snapshot como read-only em path gerenciado.
+- [x] Abrir snapshot no file manager.
 - [~] Mostrar estado montado na UI.
 - [~] Ação explícita de unmount.
 - [~] Cleanup de mounts da sessão ao fechar a GUI.
 - [ ] Cleanup global seguro via serviço D-Bus.
 - [ ] Nome curto e legível para diretórios temporários de browse.
-- [ ] Teste que garante escrita negada no mount browse.
-- [ ] Teste de cleanup no loopback.
+- [x] Teste que garante escrita negada no mount browse.
+- [x] Teste de cleanup no loopback.
 
 Aceite:
 

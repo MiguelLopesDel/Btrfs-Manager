@@ -8,3 +8,7 @@
 /quality/jscpd/
 lcov.info
 mutation-report/
+CLAUDE.md
+.claude/
+.agents/
+.codex/

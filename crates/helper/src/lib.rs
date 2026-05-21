@@ -141,11 +141,38 @@ impl CommandRunner for SystemCommandRunner {
 
 pub struct Helper<R> {
     runner: R,
+    caller_uid: Option<u32>,
 }
 
 impl<R: CommandRunner> Helper<R> {
     pub fn new(runner: R) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            caller_uid: None,
+        }
+    }
+
+    pub fn with_caller_uid(mut self, uid: u32) -> Self {
+        self.caller_uid = Some(uid);
+        self
+    }
+
+    fn managed_mount_roots(&self) -> Vec<PathBuf> {
+        let mut roots = vec![
+            std::env::temp_dir().join("btrfs-manager-browse"),
+            std::env::temp_dir().join("btrfs-manager-toplevel"),
+        ];
+        if let Some(runtime_dir) = runtime_dir_from_env() {
+            roots.push(runtime_dir.join("btrfs-manager"));
+        }
+        if let Some(uid) = self.caller_uid {
+            let caller_runtime = PathBuf::from("/run/user").join(uid.to_string());
+            let caller_dir = caller_runtime.join("btrfs-manager");
+            if !roots.contains(&caller_dir) {
+                roots.push(caller_dir);
+            }
+        }
+        roots
     }
 
     pub fn handle(&self, request: HelperRequest) -> Result<HelperResponse, HelperError> {
@@ -232,6 +259,11 @@ impl<R: CommandRunner> Helper<R> {
             HelperRequest::MountSnapshot { source, target } => {
                 validate_path(&source)?;
                 validate_path(&target)?;
+                tracing::debug!(
+                    source = %source.display(),
+                    target = %target.display(),
+                    "mounting snapshot read-only"
+                );
                 let bind_args = vec![
                     "--bind".into(),
                     source.display().to_string(),
@@ -253,6 +285,11 @@ impl<R: CommandRunner> Helper<R> {
             HelperRequest::MountTopLevel { mountpoint, target } => {
                 validate_path(&mountpoint)?;
                 validate_path(&target)?;
+                tracing::debug!(
+                    mountpoint = %mountpoint.display(),
+                    target = %target.display(),
+                    "mounting btrfs top-level"
+                );
                 let mountpoint_arg = mountpoint.display().to_string();
                 let findmnt_args = vec![
                     "-n".into(),
@@ -263,6 +300,7 @@ impl<R: CommandRunner> Helper<R> {
                 ];
                 let source_output = self.runner.run("findmnt", &findmnt_args)?;
                 let source = normalize_findmnt_source(source_output.trim());
+                tracing::debug!(device = %source, "resolved block device");
                 let mount_args = vec![
                     "-o".into(),
                     "ro,subvolid=5".into(),
@@ -278,6 +316,7 @@ impl<R: CommandRunner> Helper<R> {
             }
             HelperRequest::UnmountSnapshot { target } => {
                 validate_path(&target)?;
+                tracing::debug!(target = %target.display(), "unmounting snapshot");
                 let args = vec![target.display().to_string()];
                 self.runner.run("umount", &args)?;
                 Ok(HelperResponse {
@@ -378,35 +417,32 @@ impl<R: CommandRunner> Helper<R> {
     }
 
     fn cleanup_managed_mounts(&self) -> Result<usize, HelperError> {
-        let mut targets = Vec::new();
+        let mount_roots = self.managed_mount_roots();
 
-        for root in managed_mount_roots() {
-            if !root.exists() {
-                continue;
-            }
-            let args = vec![
-                "-R".into(),
-                "-n".into(),
-                "-o".into(),
-                "TARGET".into(),
-                "--target".into(),
-                root.display().to_string(),
-            ];
-            match self.runner.run("findmnt", &args) {
-                Ok(output) => {
-                    targets.extend(output.lines().map(PathBuf::from));
-                }
-                Err(HelperError::CommandFailed { .. }) => {}
-                Err(err) => return Err(err),
-            }
-        }
+        // List ALL current mounts and filter to managed roots.
+        // Using --target with -R would find the parent mount of the root and list
+        // all its submounts (potentially the entire system), so we list everything
+        // and filter ourselves instead.
+        let args = vec!["-n".into(), "-r".into(), "-o".into(), "TARGET".into()];
+        let output = match self.runner.run("findmnt", &args) {
+            Ok(o) => o,
+            Err(HelperError::CommandFailed { .. }) => return Ok(0),
+            Err(err) => return Err(err),
+        };
+
+        let mut targets: Vec<PathBuf> = output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(line.trim()))
+            .filter(|path| mount_roots.iter().any(|root| path.starts_with(root)))
+            .collect();
 
         targets.sort_by_key(|target| std::cmp::Reverse(target.as_os_str().len()));
         targets.dedup();
 
         let mut cleaned = 0;
         for target in targets {
-            validate_managed_mount_target(&target)?;
+            tracing::debug!(target = %target.display(), "unmounting managed browse mount");
             let args = vec![target.display().to_string()];
             self.runner.run("umount", &args)?;
             cleaned += 1;
@@ -1090,11 +1126,7 @@ fn validate_path(path: &Path) -> Result<(), HelperError> {
     validate_absolute_no_traversal(path).map_err(HelperError::from)
 }
 
-fn validate_managed_mount_target(path: &Path) -> Result<(), HelperError> {
-    validate_path(path)?;
-    validate_managed_mount_target_with_roots(path, &managed_mount_roots())
-}
-
+#[cfg(test)]
 fn validate_managed_mount_target_with_roots(
     path: &Path,
     roots: &[PathBuf],
@@ -1104,19 +1136,6 @@ fn validate_managed_mount_target_with_roots(
     } else {
         Err(PathSafetyError::Traversal.into())
     }
-}
-
-fn managed_mount_roots() -> Vec<PathBuf> {
-    let mut roots = vec![
-        std::env::temp_dir().join("btrfs-manager-browse"),
-        std::env::temp_dir().join("btrfs-manager-toplevel"),
-    ];
-
-    if let Some(runtime_dir) = runtime_dir_from_env() {
-        roots.push(runtime_dir.join("btrfs-manager"));
-    }
-
-    roots
 }
 
 fn runtime_dir_from_env() -> Option<PathBuf> {
