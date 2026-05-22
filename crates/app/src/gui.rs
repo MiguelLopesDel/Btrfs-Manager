@@ -784,7 +784,7 @@ fn render_snapshot_row(
     state: UiState,
 ) {
     let mountpoint = mountpoint.to_path_buf();
-    let source_mountpoint = mountpoint.to_path_buf();
+    let mountpoint_for_delete = mountpoint.clone();
     let relative_path = snapshot.path.clone();
     let target = browse_mount_target(&relative_path);
     let is_mounted = state.mounted_snapshots.borrow().contains(&target);
@@ -811,8 +811,10 @@ fn render_snapshot_row(
     let unmount_for_browse = unmount.clone();
     let state_for_browse = state.clone();
     let snapshot_id = snapshot.id.0;
+    let tags_for_browse = snapshot.tags.clone();
+    let tags_for_unmount = snapshot.tags.clone();
     browse.connect_clicked(move |_| {
-        match browse_snapshot_readonly(source_mountpoint.clone(), relative_path.clone()) {
+        match browse_snapshot_readonly(mountpoint.clone(), relative_path.clone()) {
             Ok(mounted) => {
                 state_for_browse
                     .mounted_snapshots
@@ -822,10 +824,11 @@ fn render_snapshot_row(
                     .session_mounts
                     .borrow_mut()
                     .extend(mounted.created_mounts.iter().cloned());
-                row_for_browse.set_subtitle(&snapshot_subtitle(
+                row_for_browse.set_subtitle(&snapshot_subtitle_full(
                     snapshot_id,
                     true,
                     &mounted.target,
+                    &tags_for_browse,
                 ));
                 browse_for_browse.set_sensitive(false);
                 unmount_for_browse.set_sensitive(true);
@@ -852,10 +855,11 @@ fn render_snapshot_row(
                     .mounted_snapshots
                     .borrow_mut()
                     .remove(&target_for_unmount);
-                row_for_unmount.set_subtitle(&snapshot_subtitle(
+                row_for_unmount.set_subtitle(&snapshot_subtitle_full(
                     snapshot_id,
                     false,
                     &target_for_unmount,
+                    &tags_for_unmount,
                 ));
                 browse_for_unmount.set_sensitive(true);
                 unmount_for_unmount.set_sensitive(false);
@@ -898,7 +902,7 @@ fn render_snapshot_row(
             let state_c = state_for_delete.clone();
             let list_c = list_for_delete.clone();
             let path_c = path_for_delete.clone();
-            let mount_c = mountpoint.clone();
+            let mount_c = mountpoint_for_delete.clone();
             dialog.connect_response(None, move |_, response| {
                 if response != "delete" {
                     return;
@@ -1436,65 +1440,31 @@ fn browse_snapshot_readonly(
     tracing::debug!(
         mountpoint = %mountpoint.display(),
         relative_path = %relative_path.display(),
-        "browse_snapshot_readonly: resolving path"
+        "browse_snapshot_readonly: mounting subvolume"
     );
-    let resolved = resolve_subvolume_path(&mountpoint, &relative_path)?;
-    let target = browse_mount_target(&relative_path);
-    tracing::debug!(source = %resolved.source.display(), target = %target.display(), "browse: creating target dir");
     let target = ensure_browse_target(&relative_path)?;
-    tracing::debug!("browse: pre-unmount existing target (ignore errors)");
+    // Pre-unmount if something is already mounted there (ignore errors).
     let _ = handle_privileged(HelperRequest::UnmountSnapshot {
         target: target.clone(),
     });
-    tracing::debug!("browse: mounting snapshot read-only");
-    handle_privileged(HelperRequest::MountSnapshot {
-        source: resolved.source,
+    // Mount the snapshot as a proper btrfs subvolume — not a bind mount from the
+    // top-level mount, which would give empty stubs for nested subvolumes.
+    handle_privileged(HelperRequest::MountSubvolumeReadOnly {
+        mountpoint,
+        subvol_path: relative_path,
         target: target.clone(),
     })?;
     tracing::debug!(target = %target.display(), "browse: opening file manager");
     open_in_filemanager(&target)?;
-    let mut created_mounts = resolved.created_mounts;
-    created_mounts.push(target.clone());
     Ok(MountedBrowse {
-        target,
-        created_mounts,
+        target: target.clone(),
+        created_mounts: vec![target],
     })
-}
-
-struct ResolvedSubvolumePath {
-    source: PathBuf,
-    created_mounts: Vec<PathBuf>,
 }
 
 struct MountedBrowse {
     target: PathBuf,
     created_mounts: Vec<PathBuf>,
-}
-
-fn resolve_subvolume_path(
-    mountpoint: &std::path::Path,
-    relative_path: &std::path::Path,
-) -> anyhow::Result<ResolvedSubvolumePath> {
-    // The helper manages a persistent top-level (subvolid=5) mount per filesystem.
-    // All subvolume paths from ListSubvolumes are canonical relative to that mount.
-    let response = handle_privileged(HelperRequest::MountTopLevel {
-        mountpoint: mountpoint.to_path_buf(),
-    })?;
-    let top_level: PathBuf = serde_json::from_value(
-        response.data.context("MountTopLevel returned no path")?,
-    )?;
-    tracing::debug!(top_level = %top_level.display(), relative = %relative_path.display(), "resolve: using persistent top-level");
-    let source = top_level.join(relative_path);
-    if source.exists() {
-        return Ok(ResolvedSubvolumePath {
-            source,
-            created_mounts: Vec::new(), // persistent mount, not session-scoped
-        });
-    }
-    anyhow::bail!(
-        "snapshot path not found in top-level mount: {}",
-        relative_path.display()
-    )
 }
 
 fn browse_mount_target(source: &std::path::Path) -> PathBuf {

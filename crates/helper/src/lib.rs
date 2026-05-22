@@ -63,6 +63,15 @@ pub enum HelperRequest {
         source: PathBuf,
         target: PathBuf,
     },
+    /// Mount a btrfs subvolume read-only by path relative to the filesystem root.
+    /// Unlike MountSnapshot (which bind-mounts from the top-level mount and produces
+    /// empty stubs for nested subvolumes), this does a real btrfs subvol mount so
+    /// the full snapshot contents are visible.
+    MountSubvolumeReadOnly {
+        mountpoint: PathBuf,
+        subvol_path: PathBuf,
+        target: PathBuf,
+    },
     MountTopLevel {
         mountpoint: PathBuf,
     },
@@ -353,6 +362,31 @@ impl<R: CommandRunner> Helper<R> {
                     data: None,
                 })
             }
+            HelperRequest::MountSubvolumeReadOnly { mountpoint, subvol_path, target } => {
+                validate_path(&mountpoint)?;
+                validate_path(&target)?;
+                let device_output = self.runner.run("findmnt", &[
+                    "-n".into(), "-o".into(), "SOURCE".into(),
+                    "--target".into(), mountpoint.display().to_string(),
+                ])?;
+                let device = normalize_findmnt_source(device_output.trim());
+                std::fs::create_dir_all(&target)?;
+                let subvol_opt = format!("ro,subvol={}", subvol_path.display());
+                self.runner.run("mount", &[
+                    "-t".into(), "btrfs".into(), "-o".into(), subvol_opt,
+                    device, target.display().to_string(),
+                ])?;
+                tracing::info!(
+                    subvol = %subvol_path.display(),
+                    target = %target.display(),
+                    "subvolume mounted read-only"
+                );
+                Ok(HelperResponse {
+                    ok: true,
+                    message: "subvolume mounted".into(),
+                    data: None,
+                })
+            }
             HelperRequest::MountTopLevel { mountpoint } => {
                 validate_path(&mountpoint)?;
                 let top = self.ensure_top_level_mount(&mountpoint)?;
@@ -392,7 +426,13 @@ impl<R: CommandRunner> Helper<R> {
 
                 let source = top.join(&subvolume_path);
                 let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S");
-                let dest_name = format!("managed-{timestamp}");
+                let source_label = subvolume_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.trim_start_matches('@'))
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("root");
+                let dest_name = format!("managed-{source_label}-{timestamp}");
                 let dest_parent = top.join(&snapshot_root);
                 if !dest_parent.exists() {
                     self.runner.run("btrfs", &[
