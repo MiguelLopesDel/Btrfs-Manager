@@ -65,7 +65,6 @@ pub enum HelperRequest {
     },
     MountTopLevel {
         mountpoint: PathBuf,
-        target: PathBuf,
     },
     UnmountSnapshot {
         target: PathBuf,
@@ -174,21 +173,62 @@ impl<R: CommandRunner> Helper<R> {
     }
 
     fn managed_mount_roots(&self) -> Vec<PathBuf> {
-        let mut roots = vec![
-            std::env::temp_dir().join("btrfs-manager-browse"),
-            std::env::temp_dir().join("btrfs-manager-toplevel"),
-        ];
-        if let Some(runtime_dir) = runtime_dir_from_env() {
-            roots.push(runtime_dir.join("btrfs-manager"));
-        }
+        // Only browse (session-scoped) mounts are cleaned by CleanupManagedMounts.
+        // Top-level mounts at /run/btrfs-manager/toplevel/ persist for the service
+        // lifetime and are not cleaned here.
+        let mut roots = Vec::new();
         if let Some(uid) = self.caller_uid {
-            let caller_runtime = PathBuf::from("/run/user").join(uid.to_string());
-            let caller_dir = caller_runtime.join("btrfs-manager");
-            if !roots.contains(&caller_dir) {
-                roots.push(caller_dir);
+            roots.push(PathBuf::from(format!("/run/user/{uid}/btrfs-manager")));
+        }
+        if let Some(runtime_dir) = runtime_dir_from_env() {
+            let candidate = runtime_dir.join("btrfs-manager");
+            if !roots.contains(&candidate) {
+                roots.push(candidate);
             }
         }
         roots
+    }
+
+    /// Returns the persistent top-level (subvolid=5) mount path for the given
+    /// mountpoint's filesystem. Mounts it at /run/btrfs-manager/toplevel/<uuid>/
+    /// if not already mounted; subsequent calls are idempotent.
+    fn ensure_top_level_mount(&self, mountpoint: &Path) -> Result<PathBuf, HelperError> {
+        let uuid_output = self.runner.run("findmnt", &[
+            "-n".into(), "-o".into(), "UUID".into(),
+            "--target".into(), mountpoint.display().to_string(),
+        ])?;
+        let fs_uuid = uuid_output.trim().to_string();
+        if fs_uuid.is_empty() {
+            return Err(HelperError::InvalidPolicy(format!(
+                "could not determine filesystem UUID for {}",
+                mountpoint.display()
+            )));
+        }
+        let base = std::env::var_os("BTRFS_MANAGER_TOPLEVEL_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/run/btrfs-manager/toplevel"));
+        let top = base.join(&fs_uuid);
+        // Idempotent: skip mount if already mounted at this path.
+        let already = self
+            .runner
+            .run("findmnt", &["-n".into(), "--mountpoint".into(), top.display().to_string()])
+            .ok()
+            .map(|o| !o.trim().is_empty())
+            .unwrap_or(false);
+        if !already {
+            let device_output = self.runner.run("findmnt", &[
+                "-n".into(), "-o".into(), "SOURCE".into(),
+                "--target".into(), mountpoint.display().to_string(),
+            ])?;
+            let device = normalize_findmnt_source(device_output.trim());
+            std::fs::create_dir_all(&top)?;
+            self.runner.run("mount", &[
+                "-o".into(), "subvolid=5".into(),
+                device, top.display().to_string(),
+            ])?;
+            tracing::info!(path = %top.display(), "mounted btrfs top-level");
+        }
+        Ok(top)
     }
 
     pub fn handle(&self, request: HelperRequest) -> Result<HelperResponse, HelperError> {
@@ -196,11 +236,14 @@ impl<R: CommandRunner> Helper<R> {
             HelperRequest::DiscoverFilesystems => self.discover_filesystems(),
             HelperRequest::ListSubvolumes { mountpoint } => {
                 validate_path(&mountpoint)?;
+                // List from the top-level (subvolid=5) so paths are canonical:
+                // nested subvolumes like var/lib/portables appear as @/var/lib/portables.
+                let top = self.ensure_top_level_mount(&mountpoint)?;
                 let args = vec![
                     "subvolume".into(),
                     "list".into(),
                     "-u".into(),
-                    mountpoint.display().to_string(),
+                    top.display().to_string(),
                 ];
                 let output = self.runner.run("btrfs", &args)?;
                 let mut subvolumes = parse_btrfs_subvolume_list(&output)?;
@@ -310,36 +353,13 @@ impl<R: CommandRunner> Helper<R> {
                     data: None,
                 })
             }
-            HelperRequest::MountTopLevel { mountpoint, target } => {
+            HelperRequest::MountTopLevel { mountpoint } => {
                 validate_path(&mountpoint)?;
-                validate_path(&target)?;
-                tracing::debug!(
-                    mountpoint = %mountpoint.display(),
-                    target = %target.display(),
-                    "mounting btrfs top-level"
-                );
-                let mountpoint_arg = mountpoint.display().to_string();
-                let findmnt_args = vec![
-                    "-n".into(),
-                    "-o".into(),
-                    "SOURCE".into(),
-                    "--target".into(),
-                    mountpoint_arg,
-                ];
-                let source_output = self.runner.run("findmnt", &findmnt_args)?;
-                let source = normalize_findmnt_source(source_output.trim());
-                tracing::debug!(device = %source, "resolved block device");
-                let mount_args = vec![
-                    "-o".into(),
-                    "ro,subvolid=5".into(),
-                    source,
-                    target.display().to_string(),
-                ];
-                self.runner.run("mount", &mount_args)?;
+                let top = self.ensure_top_level_mount(&mountpoint)?;
                 Ok(HelperResponse {
                     ok: true,
-                    message: "top-level mounted".into(),
-                    data: None,
+                    message: "top-level ready".into(),
+                    data: Some(serde_json::to_value(top)?),
                 })
             }
             HelperRequest::UnmountSnapshot { target } => {
@@ -368,76 +388,33 @@ impl<R: CommandRunner> Helper<R> {
                 tags,
             } => {
                 validate_path(&mountpoint)?;
-                // Resolve the block device for this mountpoint
-                let findmnt_args = vec![
-                    "-n".into(), "-o".into(), "SOURCE".into(),
-                    "--target".into(), mountpoint.display().to_string(),
-                ];
-                let device_raw = self.runner.run("findmnt", &findmnt_args)?;
-                let device = normalize_findmnt_source(device_raw.trim());
+                let top = self.ensure_top_level_mount(&mountpoint)?;
 
-                // Mount the Btrfs top-level (subvolid=5) writable to a unique temp dir.
-                // Using a dedicated temp dir keeps this mount invisible to browse cleanup.
-                let temp_suffix = Uuid::new_v4().simple().to_string();
-                let top = std::env::temp_dir()
-                    .join(format!("btrfs-manager-snap-{temp_suffix}"));
-                std::fs::create_dir_all(&top)?;
+                let source = top.join(&subvolume_path);
+                let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S");
+                let dest_name = format!("managed-{timestamp}");
+                let dest_parent = top.join(&snapshot_root);
+                if !dest_parent.exists() {
+                    self.runner.run("btrfs", &[
+                        "subvolume".into(), "create".into(), dest_parent.display().to_string(),
+                    ])?;
+                }
+                let dest = dest_parent.join(&dest_name);
+                self.runner.run("btrfs", &[
+                    "subvolume".into(), "snapshot".into(), "-r".into(),
+                    source.display().to_string(), dest.display().to_string(),
+                ])?;
 
-                let snapshot_result: Result<Snapshot, HelperError> = (|| {
-                    let mount_args = vec![
-                        "-o".into(), "subvolid=5".into(),
-                        device, top.display().to_string(),
-                    ];
-                    self.runner.run("mount", &mount_args)?;
-
-                    // On subvol=@ systems, nested subvolumes (e.g. var/lib/portables)
-                    // are accessible at top/@/<path>, not top/<path>.
-                    let source = resolve_top_level_path(&top, &subvolume_path)
-                        .ok_or_else(|| HelperError::InvalidPolicy(format!(
-                            "subvolume path not found in top-level mount: {}",
-                            subvolume_path.display()
-                        )))?;
-                    let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S");
-                    let dest_name = format!("managed-{timestamp}");
-                    let dest_parent = top.join(&snapshot_root);
-                    // Create the container as a proper Btrfs subvolume if it doesn't
-                    // exist yet — same approach as Snapper (@snapshots) and Timeshift
-                    // (timeshift-btrfs). Using a subvolume (not a plain dir) allows
-                    // independent mounting and btrfs send/receive.
-                    if !dest_parent.exists() {
-                        let create_args = vec![
-                            "subvolume".into(),
-                            "create".into(),
-                            dest_parent.display().to_string(),
-                        ];
-                        self.runner.run("btrfs", &create_args)?;
-                    }
-                    let dest = dest_parent.join(&dest_name);
-
-                    let snap_args = vec![
-                        "subvolume".into(), "snapshot".into(), "-r".into(),
-                        source.display().to_string(), dest.display().to_string(),
-                    ];
-                    self.runner.run("btrfs", &snap_args)?;
-
-                    // Path stored in SQLite is relative to the Btrfs volume root
-                    let rel_path = snapshot_root.join(dest_name);
-                    Ok(Snapshot {
-                        id: Uuid::new_v4(),
-                        source_subvolume: SubvolumeId(0),
-                        path: rel_path,
-                        created_at: Utc::now(),
-                        tags,
-                        origin: SnapshotOrigin::Managed,
-                        state: SnapshotState::ReadOnly,
-                    })
-                })();
-
-                // Always unmount the temp mount regardless of snapshot result.
-                let _ = self.runner.run("umount", &[top.display().to_string()]);
-                let _ = std::fs::remove_dir(&top);
-
-                let snapshot = snapshot_result?;
+                let rel_path = snapshot_root.join(dest_name);
+                let snapshot = Snapshot {
+                    id: Uuid::new_v4(),
+                    source_subvolume: SubvolumeId(0),
+                    path: rel_path,
+                    created_at: Utc::now(),
+                    tags,
+                    origin: SnapshotOrigin::Managed,
+                    state: SnapshotState::ReadOnly,
+                };
                 StateStore::open()?.insert_managed_snapshot(None, &snapshot)?;
                 tracing::info!(path = %snapshot.path.display(), "managed snapshot created");
                 Ok(HelperResponse {
@@ -458,36 +435,11 @@ impl<R: CommandRunner> Helper<R> {
                 validate_path(&mountpoint)?;
                 let store = StateStore::open()?;
                 let id = store.find_managed_snapshot_id_by_path(&subvolume_path)?;
-
-                // Need top-level mount to access the relative subvolume path.
-                let findmnt_args = vec![
-                    "-n".into(), "-o".into(), "SOURCE".into(),
-                    "--target".into(), mountpoint.display().to_string(),
-                ];
-                let device_raw = self.runner.run("findmnt", &findmnt_args)?;
-                let device = normalize_findmnt_source(device_raw.trim());
-
-                let temp_suffix = Uuid::new_v4().simple().to_string();
-                let top = std::env::temp_dir()
-                    .join(format!("btrfs-manager-del-{temp_suffix}"));
-                std::fs::create_dir_all(&top)?;
-
-                let delete_result: Result<(), HelperError> = (|| {
-                    let mount_args = vec![
-                        "-o".into(), "subvolid=5".into(),
-                        device, top.display().to_string(),
-                    ];
-                    self.runner.run("mount", &mount_args)?;
-                    let abs_path = top.join(&subvolume_path);
-                    let del_args = vec!["subvolume".into(), "delete".into(), abs_path.display().to_string()];
-                    self.runner.run("btrfs", &del_args)?;
-                    Ok(())
-                })();
-
-                let _ = self.runner.run("umount", &[top.display().to_string()]);
-                let _ = std::fs::remove_dir(&top);
-
-                delete_result?;
+                let top = self.ensure_top_level_mount(&mountpoint)?;
+                let abs_path = top.join(&subvolume_path);
+                self.runner.run("btrfs", &[
+                    "subvolume".into(), "delete".into(), abs_path.display().to_string(),
+                ])?;
                 store.delete_managed_snapshot(id)?;
                 tracing::info!(path = %subvolume_path.display(), "managed snapshot deleted");
                 Ok(HelperResponse {
@@ -750,32 +702,14 @@ impl<R: CommandRunner> Helper<R> {
         }
         validate_policy(&policy)?;
 
-        // Resolve block device for this filesystem mountpoint.
-        let findmnt_args = vec![
-            "-n".into(), "-o".into(), "SOURCE".into(),
-            "--target".into(), policy.mountpoint.display().to_string(),
-        ];
-        let device_raw = self.runner.run("findmnt", &findmnt_args)?;
-        let device = normalize_findmnt_source(device_raw.trim());
-
-        // Mount top-level (subvolid=5) writable to a temp dir.
-        let temp_suffix = Uuid::new_v4().simple().to_string();
-        let top = std::env::temp_dir().join(format!("btrfs-manager-ret-{temp_suffix}"));
-        std::fs::create_dir_all(&top)?;
+        let top = self.ensure_top_level_mount(&policy.mountpoint)?;
 
         let result: Result<(PathBuf, Vec<PathBuf>), HelperError> = (|| {
-            let mount_args = vec![
-                "-o".into(), "subvolid=5".into(),
-                device, top.display().to_string(),
-            ];
-            self.runner.run("mount", &mount_args)?;
-
             // Create snapshot container subvolume if needed.
             let container = top.join(&policy.snapshot_root);
             if !container.exists() {
                 self.runner.run("btrfs", &[
-                    "subvolume".into(), "create".into(),
-                    container.display().to_string(),
+                    "subvolume".into(), "create".into(), container.display().to_string(),
                 ])?;
             }
             let snap_dir_abs = top.join(policy_snapshot_dir(&policy));
@@ -787,11 +721,7 @@ impl<R: CommandRunner> Helper<R> {
                 Utc::now().format("%Y%m%d-%H%M%S")
             );
             let dest_abs = snap_dir_abs.join(&dest_name);
-            let source_abs = resolve_top_level_path(&top, &policy.source_path)
-                .ok_or_else(|| HelperError::InvalidPolicy(format!(
-                    "subvolume path not found in top-level mount: {}",
-                    policy.source_path.display()
-                )))?;
+            let source_abs = top.join(&policy.source_path);
 
             self.runner.run("btrfs", &[
                 "subvolume".into(), "snapshot".into(), "-r".into(),
@@ -824,8 +754,7 @@ impl<R: CommandRunner> Helper<R> {
                 }
                 let old_abs = top.join(&old.path);
                 self.runner.run("btrfs", &[
-                    "subvolume".into(), "delete".into(),
-                    old_abs.display().to_string(),
+                    "subvolume".into(), "delete".into(), old_abs.display().to_string(),
                 ])?;
                 store.delete_managed_snapshot(old.id)?;
                 deleted.push(old.path);
@@ -833,9 +762,6 @@ impl<R: CommandRunner> Helper<R> {
 
             Ok((rel_path, deleted))
         })();
-
-        let _ = self.runner.run("umount", &[top.display().to_string()]);
-        let _ = std::fs::remove_dir(&top);
 
         result
     }
@@ -1385,23 +1311,6 @@ fn runtime_dir_from_env() -> Option<PathBuf> {
     None
 }
 
-/// Resolves a subvolume path under a top-level Btrfs mount.
-///
-/// On `subvol=@` systems, nested subvolumes (e.g. `var/lib/portables` inside
-/// `@`) are accessible via `top/@/var/lib/portables`, not `top/var/lib/portables`.
-/// Try the direct path first, then the `@/<path>` fallback.
-fn resolve_top_level_path(top: &Path, subvolume_path: &Path) -> Option<PathBuf> {
-    let direct = top.join(subvolume_path);
-    if direct.exists() {
-        return Some(direct);
-    }
-    let via_at = top.join("@").join(subvolume_path);
-    if via_at.exists() {
-        return Some(via_at);
-    }
-    None
-}
-
 fn normalize_findmnt_source(source: &str) -> String {
     source
         .split_once('[')
@@ -1593,6 +1502,11 @@ mod tests {
                 && args.iter().any(|arg| arg == "UUID,SOURCE,TARGET,OPTIONS")
             {
                 Ok("UUID=\"550e8400-e29b-41d4-a716-446655440000\" SOURCE=\"/dev/mapper/cryptroot[/@]\" TARGET=\"/\" OPTIONS=\"rw,relatime,subvol=/@\"\nUUID=\"550e8400-e29b-41d4-a716-446655440000\" SOURCE=\"/dev/mapper/cryptroot[/@home]\" TARGET=\"/home\" OPTIONS=\"rw,relatime,subvol=/@home\"\n".into())
+            } else if program == "findmnt" && args.iter().any(|arg| arg == "--mountpoint") {
+                // Simulate "not mounted" so ensure_top_level_mount always mounts.
+                Ok("".into())
+            } else if program == "findmnt" && args.iter().any(|arg| arg == "UUID") {
+                Ok("550e8400-e29b-41d4-a716-446655440000\n".into())
             } else if program == "findmnt" {
                 Ok("/dev/mapper/cryptroot[/@]\n".into())
             } else {
@@ -1621,6 +1535,8 @@ mod tests {
 
     #[test]
     fn list_subvolumes_returns_structured_inventory() {
+        let tmp = std::env::temp_dir().join("btrfs-manager-test-toplevel");
+        unsafe { std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &tmp); }
         let runner = RecordingRunner {
             calls: RefCell::new(Vec::new()),
         };
@@ -1632,6 +1548,7 @@ mod tests {
             .unwrap();
         assert!(response.ok);
         assert!(response.data.is_some());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -1734,26 +1651,26 @@ mod tests {
 
     #[test]
     fn mounts_top_level_with_subvolid_five() {
+        let tmp = std::env::temp_dir().join("btrfs-manager-test-toplevel2");
+        unsafe { std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &tmp); }
         let runner = RecordingRunner {
             calls: RefCell::new(Vec::new()),
         };
         let helper = Helper::new(runner);
-        helper
-            .handle(HelperRequest::MountTopLevel {
-                mountpoint: "/".into(),
-                target: "/tmp/top".into(),
-            })
+        let response = helper
+            .handle(HelperRequest::MountTopLevel { mountpoint: "/".into() })
             .unwrap();
+        // Response must include the mount path.
+        assert!(response.data.is_some());
         let calls = helper.runner.calls.borrow();
-        assert_eq!(calls[0].0, "findmnt");
-        assert_eq!(calls[1].0, "mount");
-        assert!(calls[1].1.contains(&"ro,subvolid=5".to_string()));
-        assert!(calls[1].1.contains(&"/dev/mapper/cryptroot".to_string()));
-        assert!(
-            !calls[1]
-                .1
-                .contains(&"/dev/mapper/cryptroot[/@]".to_string())
-        );
+        // Sequence: UUID query, mountpoint check, SOURCE query, mount.
+        let mount_call = calls.iter().find(|(prog, _)| prog == "mount").unwrap();
+        assert!(mount_call.1.contains(&"subvolid=5".to_string()));
+        assert!(mount_call.1.contains(&"/dev/mapper/cryptroot".to_string()));
+        assert!(!mount_call.1.contains(&"/dev/mapper/cryptroot[/@]".to_string()));
+        assert!(!mount_call.1.contains(&"ro,subvolid=5".to_string()));
+        drop(calls);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -1798,14 +1715,18 @@ mod tests {
 
     #[test]
     fn cleanup_managed_mounts_only_unmounts_managed_targets() {
-        std::fs::create_dir_all(std::env::temp_dir().join("btrfs-manager-browse")).unwrap();
+        // RecordingRunner returns a /tmp/btrfs-manager-browse path for TARGET queries.
+        // With the new architecture, managed roots are per-uid /run/user/<uid>/btrfs-manager.
+        // Without caller_uid, managed_mount_roots is empty and nothing is unmounted.
         let runner = RecordingRunner {
             calls: RefCell::new(Vec::new()),
         };
         let helper = Helper::new(runner);
-        helper.handle(HelperRequest::CleanupManagedMounts).unwrap();
+        let response = helper.handle(HelperRequest::CleanupManagedMounts).unwrap();
+        assert!(response.ok);
+        // No umount because no managed mount roots are configured without caller_uid.
         let calls = helper.runner.calls.borrow();
-        assert!(calls.iter().any(|(program, _)| program == "umount"));
+        assert!(!calls.iter().any(|(program, _)| program == "umount"));
     }
 
     #[test]

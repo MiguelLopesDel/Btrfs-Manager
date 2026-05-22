@@ -481,7 +481,7 @@ fn browse_mount_root() -> PathBuf {
 }
 
 fn managed_mount_roots_exist() -> bool {
-    browse_mount_root().exists() || std::env::temp_dir().join("btrfs-manager-toplevel").exists()
+    browse_mount_root().exists()
 }
 
 fn snapshot_subtitle(id: u64, mounted: bool, target: &std::path::Path) -> String {
@@ -503,21 +503,6 @@ fn show_toast(toast_overlay: &libadwaita::ToastOverlay, message: &str) {
     toast_overlay.add_toast(libadwaita::Toast::new(message));
 }
 
-fn top_level_mount_target(mountpoint: &std::path::Path) -> PathBuf {
-    let label = if mountpoint == std::path::Path::new("/") {
-        "root".to_string()
-    } else {
-        mountpoint
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(sanitize_name)
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "mount".to_string())
-    };
-    std::env::temp_dir()
-        .join("btrfs-manager-toplevel")
-        .join(format!("{label}-{:08x}", path_hash(mountpoint)))
-}
 
 fn short_snapshot_mount_name(path: &std::path::Path) -> String {
     let mut components = path
@@ -1490,41 +1475,26 @@ fn resolve_subvolume_path(
     mountpoint: &std::path::Path,
     relative_path: &std::path::Path,
 ) -> anyhow::Result<ResolvedSubvolumePath> {
-    let direct = mountpoint.join(relative_path);
-    tracing::debug!(direct = %direct.display(), "resolve: checking direct path");
-    if direct.exists() {
-        tracing::debug!("resolve: direct path exists, using it");
+    // The helper manages a persistent top-level (subvolid=5) mount per filesystem.
+    // All subvolume paths from ListSubvolumes are canonical relative to that mount.
+    let response = handle_privileged(HelperRequest::MountTopLevel {
+        mountpoint: mountpoint.to_path_buf(),
+    })?;
+    let top_level: PathBuf = serde_json::from_value(
+        response.data.context("MountTopLevel returned no path")?,
+    )?;
+    tracing::debug!(top_level = %top_level.display(), relative = %relative_path.display(), "resolve: using persistent top-level");
+    let source = top_level.join(relative_path);
+    if source.exists() {
         return Ok(ResolvedSubvolumePath {
-            source: direct,
-            created_mounts: Vec::new(),
+            source,
+            created_mounts: Vec::new(), // persistent mount, not session-scoped
         });
     }
-
-    let top_level = top_level_mount_target(mountpoint);
-    tracing::debug!(top_level = %top_level.display(), "resolve: direct path missing, mounting top-level");
-    std::fs::create_dir_all(&top_level)?;
-    let mut created_mounts = Vec::new();
-    if !top_level.join(relative_path).exists() {
-        handle_privileged(HelperRequest::MountTopLevel {
-            mountpoint: mountpoint.to_path_buf(),
-            target: top_level.clone(),
-        })?;
-        created_mounts.push(top_level.clone());
-    }
-
-    let resolved = top_level.join(relative_path);
-    tracing::debug!(resolved = %resolved.display(), exists = resolved.exists(), "resolve: checking top-level path");
-    if resolved.exists() {
-        Ok(ResolvedSubvolumePath {
-            source: resolved,
-            created_mounts,
-        })
-    } else {
-        anyhow::bail!(
-            "snapshot path is not accessible from current or top-level mount: {}",
-            relative_path.display()
-        );
-    }
+    anyhow::bail!(
+        "snapshot path not found in top-level mount: {}",
+        relative_path.display()
+    )
 }
 
 fn browse_mount_target(source: &std::path::Path) -> PathBuf {

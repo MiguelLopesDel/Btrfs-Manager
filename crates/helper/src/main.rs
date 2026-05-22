@@ -39,7 +39,6 @@ enum Commands {
     },
     MountTopLevel {
         mountpoint: PathBuf,
-        target: PathBuf,
     },
     UnmountSnapshot {
         target: PathBuf,
@@ -114,8 +113,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::MountSnapshot { source, target } => {
             HelperRequest::MountSnapshot { source, target }
         }
-        Commands::MountTopLevel { mountpoint, target } => {
-            HelperRequest::MountTopLevel { mountpoint, target }
+        Commands::MountTopLevel { mountpoint } => {
+            HelperRequest::MountTopLevel { mountpoint }
         }
         Commands::UnmountSnapshot { target } => HelperRequest::UnmountSnapshot { target },
         Commands::CleanupManagedMounts => HelperRequest::CleanupManagedMounts,
