@@ -89,6 +89,13 @@ pub enum HelperRequest {
         tags: Vec<String>,
     },
     ListManagedSnapshots,
+    /// Set ro flag on a managed snapshot and update its state in the DB.
+    /// Rejects unlock for external snapshots (not in managed_snapshots).
+    SetManagedSnapshotReadOnly {
+        mountpoint: PathBuf,
+        subvol_path: PathBuf,
+        readonly: bool,
+    },
     DeleteManagedSnapshot {
         // filesystem mountpoint (e.g. "/")
         mountpoint: PathBuf,
@@ -265,6 +272,11 @@ impl<R: CommandRunner> Helper<R> {
                                 subvolume.managed = true;
                                 subvolume.tags = snap.tags.clone();
                                 subvolume.created_at = Some(snap.created_at);
+                                subvolume.readonly = snap.is_managed();
+                                subvolume.unlocked = !matches!(
+                                    snap.state,
+                                    SnapshotState::ReadOnly | SnapshotState::RollbackAnchor
+                                );
                             }
                         }
                     }
@@ -469,6 +481,34 @@ impl<R: CommandRunner> Helper<R> {
                     ok: true,
                     message: format!("found {} managed snapshot(s)", snapshots.len()),
                     data: Some(serde_json::to_value(&snapshots)?),
+                })
+            }
+            HelperRequest::SetManagedSnapshotReadOnly { mountpoint, subvol_path, readonly } => {
+                validate_path(&mountpoint)?;
+                let store = StateStore::open()?;
+                let id = store.find_managed_snapshot_id_by_path(&subvol_path)?;
+                let top = self.ensure_top_level_mount(&mountpoint)?;
+                let abs_path = top.join(&subvol_path);
+                let value = if readonly { "true" } else { "false" };
+                self.runner.run("btrfs", &[
+                    "property".into(), "set".into(), abs_path.display().to_string(),
+                    "ro".into(), value.into(),
+                ])?;
+                let new_state = if readonly {
+                    SnapshotState::ReadOnly
+                } else {
+                    SnapshotState::Unlocked
+                };
+                store.update_snapshot_state(id, &new_state)?;
+                tracing::info!(
+                    path = %subvol_path.display(),
+                    readonly,
+                    "managed snapshot ro flag updated"
+                );
+                Ok(HelperResponse {
+                    ok: true,
+                    message: format!("snapshot ro set to {value}"),
+                    data: None,
                 })
             }
             HelperRequest::DeleteManagedSnapshot { mountpoint, subvolume_path } => {
@@ -1023,6 +1063,14 @@ impl StateStore {
         self.connection.execute(
             "DELETE FROM managed_snapshots WHERE id = ?1",
             params![id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    fn update_snapshot_state(&self, id: Uuid, state: &SnapshotState) -> Result<(), HelperError> {
+        self.connection.execute(
+            "UPDATE managed_snapshots SET state = ?1 WHERE id = ?2",
+            params![snapshot_state_to_db(state), id.to_string()],
         )?;
         Ok(())
     }

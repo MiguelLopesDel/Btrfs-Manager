@@ -66,6 +66,8 @@ pub struct Subvolume {
     pub readonly: bool,
     pub managed: bool,
     #[serde(default)]
+    pub unlocked: bool,
+    #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,

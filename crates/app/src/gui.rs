@@ -876,6 +876,110 @@ fn render_snapshot_row(
     row.add_suffix(&unmount);
 
     if snapshot.managed {
+        let is_unlocked = snapshot.unlocked;
+        // Unlock button — only shown when snapshot is read-only
+        let unlock_btn = gtk4::Button::builder()
+            .icon_name("changes-allow-symbolic")
+            .tooltip_text("Unlock snapshot (make writable)")
+            .valign(gtk4::Align::Center)
+            .visible(!is_unlocked)
+            .build();
+        // Lock button — only shown when snapshot is unlocked
+        let lock_btn = gtk4::Button::builder()
+            .icon_name("changes-prevent-symbolic")
+            .tooltip_text("Lock snapshot (make read-only)")
+            .valign(gtk4::Align::Center)
+            .visible(is_unlocked)
+            .build();
+
+        let state_for_unlock = state.clone();
+        let list_for_unlock = list.clone();
+        let path_for_unlock = snapshot.path.clone();
+        let mount_for_unlock = mountpoint_for_delete.clone();
+        let row_for_unlock = row.clone();
+        let unlock_c = unlock_btn.clone();
+        let lock_c = lock_btn.clone();
+        unlock_btn.connect_clicked(move |_| {
+            let dialog = libadwaita::AlertDialog::builder()
+                .heading("Unlock snapshot?")
+                .body(format!(
+                    "Make {} writable?\n\nWriting to a snapshot breaks its integrity. Only unlock if you know what you are doing.",
+                    path_for_unlock.display()
+                ))
+                .build();
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("unlock", "Unlock");
+            dialog.set_response_appearance("unlock", libadwaita::ResponseAppearance::Destructive);
+            dialog.set_default_response(Some("cancel"));
+            let state_c = state_for_unlock.clone();
+            let list_c = list_for_unlock.clone();
+            let path_c = path_for_unlock.clone();
+            let mount_c = mount_for_unlock.clone();
+            let row_c = row_for_unlock.clone();
+            let unlock_btn_c = unlock_c.clone();
+            let lock_btn_c = lock_c.clone();
+            let window_ref = unlock_btn_c.root().and_downcast::<gtk4::Window>();
+            dialog.connect_response(None, move |_, response| {
+                if response != "unlock" {
+                    return;
+                }
+                match handle_privileged(HelperRequest::SetManagedSnapshotReadOnly {
+                    mountpoint: mount_c.clone(),
+                    subvol_path: path_c.clone(),
+                    readonly: false,
+                }) {
+                    Ok(_) => {
+                        unlock_btn_c.set_visible(false);
+                        lock_btn_c.set_visible(true);
+                        row_c.add_css_class("warning");
+                        show_toast(&state_c.toast_overlay, "Snapshot unlocked — handle with care");
+                        load_mountpoint(&list_c, state_c.clone(), "", mount_c.clone());
+                    }
+                    Err(err) => show_toast(
+                        &state_c.toast_overlay,
+                        &format!("Failed to unlock snapshot: {err}"),
+                    ),
+                }
+            });
+            dialog.present(window_ref.as_ref());
+        });
+
+        let state_for_lock = state.clone();
+        let list_for_lock = list.clone();
+        let path_for_lock = snapshot.path.clone();
+        let mount_for_lock = mountpoint_for_delete.clone();
+        let row_for_lock = row.clone();
+        let unlock_c2 = unlock_btn.clone();
+        let lock_c2 = lock_btn.clone();
+        lock_btn.connect_clicked(move |_| {
+            match handle_privileged(HelperRequest::SetManagedSnapshotReadOnly {
+                mountpoint: mount_for_lock.clone(),
+                subvol_path: path_for_lock.clone(),
+                readonly: true,
+            }) {
+                Ok(_) => {
+                    lock_c2.set_visible(false);
+                    unlock_c2.set_visible(true);
+                    row_for_lock.remove_css_class("warning");
+                    show_toast(&state_for_lock.toast_overlay, "Snapshot locked");
+                    load_mountpoint(&list_for_lock, state_for_lock.clone(), "", mount_for_lock.clone());
+                }
+                Err(err) => show_toast(
+                    &state_for_lock.toast_overlay,
+                    &format!("Failed to lock snapshot: {err}"),
+                ),
+            }
+        });
+
+        row.add_suffix(&unlock_btn);
+        row.add_suffix(&lock_btn);
+        // Visual indicator for unlocked state
+        if is_unlocked {
+            row.add_css_class("warning");
+        }
+    }
+
+    if snapshot.managed {
         let delete = gtk4::Button::builder()
             .icon_name("user-trash-symbolic")
             .tooltip_text("Delete managed snapshot")

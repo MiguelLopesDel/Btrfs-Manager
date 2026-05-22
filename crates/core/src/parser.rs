@@ -58,6 +58,7 @@ fn parse_subvolume_line(line: &str) -> Result<Subvolume, ParseError> {
         mountpoint: None,
         readonly: false,
         managed: false,
+        unlocked: false,
         tags: Vec::new(),
         created_at: None,
     })
