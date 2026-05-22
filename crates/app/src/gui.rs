@@ -8,6 +8,7 @@ use btrfs_manager_helper::{
 use chrono::{DateTime, Datelike, Local, Utc};
 use gtk4::glib;
 use gtk4::prelude::*;
+
 use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet, hash_map::DefaultHasher};
@@ -37,6 +38,7 @@ struct UiState {
     suppress_selector_signal: Rc<Cell<bool>>,
     toast_overlay: libadwaita::ToastOverlay,
     filter: Rc<RefCell<SnapshotFilter>>,
+    spinner: gtk4::Spinner,
 }
 
 pub fn run() {
@@ -79,6 +81,7 @@ fn build_ui(app: &libadwaita::Application) {
             .build(),
     ));
 
+    let spinner = gtk4::Spinner::new();
     let refresh = gtk4::Button::builder()
         .icon_name("view-refresh-symbolic")
         .tooltip_text("Refresh")
@@ -89,6 +92,7 @@ fn build_ui(app: &libadwaita::Application) {
         .build();
     header.pack_end(&cleanup);
     header.pack_end(&refresh);
+    header.pack_start(&spinner);
 
     let title = gtk4::Label::builder()
         .label("Snapshots")
@@ -176,6 +180,7 @@ fn build_ui(app: &libadwaita::Application) {
         suppress_selector_signal,
         toast_overlay: toast_overlay.clone(),
         filter: Rc::new(RefCell::new(SnapshotFilter::All)),
+        spinner: spinner.clone(),
     };
 
     // Wire filter chips to re-render without issuing new Btrfs commands.
@@ -205,17 +210,20 @@ fn build_ui(app: &libadwaita::Application) {
 
     let state_for_cleanup = ui_state.clone();
     cleanup.connect_clicked(move |_| {
-        match handle_privileged(HelperRequest::CleanupManagedMounts) {
-            Ok(response) => {
-                state_for_cleanup.mounted_snapshots.borrow_mut().clear();
-                state_for_cleanup.session_mounts.borrow_mut().clear();
-                show_toast(&state_for_cleanup.toast_overlay, &response.message);
+        let state = state_for_cleanup.clone();
+        glib::MainContext::default().spawn_local(async move {
+            match handle_privileged_async(HelperRequest::CleanupManagedMounts).await {
+                Ok(response) => {
+                    state.mounted_snapshots.borrow_mut().clear();
+                    state.session_mounts.borrow_mut().clear();
+                    show_toast(&state.toast_overlay, &response.message);
+                }
+                Err(err) => show_toast(
+                    &state.toast_overlay,
+                    &format!("Failed to unmount temporary mounts: {err}"),
+                ),
             }
-            Err(err) => show_toast(
-                &state_for_cleanup.toast_overlay,
-                &format!("Failed to unmount temporary mounts: {err}"),
-            ),
-        }
+        });
     });
 
     let list_for_refresh = list.clone();
@@ -224,10 +232,10 @@ fn build_ui(app: &libadwaita::Application) {
     let selector_for_refresh = filesystem_selector.clone();
     refresh.connect_clicked(move |_| {
         discover_and_load(
-            &list_for_refresh,
+            list_for_refresh.clone(),
             state_for_refresh.clone(),
-            &selector_for_refresh,
-            search_for_refresh.text().as_str(),
+            selector_for_refresh.clone(),
+            search_for_refresh.text().to_string(),
         );
     });
 
@@ -246,9 +254,9 @@ fn build_ui(app: &libadwaita::Application) {
             return;
         };
         load_mountpoint(
-            &list_for_selector,
+            list_for_selector.clone(),
             state_for_selector.clone(),
-            search_for_selector.text().as_str(),
+            search_for_selector.text().to_string(),
             mountpoint,
         );
     });
@@ -298,18 +306,18 @@ fn build_ui(app: &libadwaita::Application) {
     }
 
     discover_and_load(
-        &list,
+        list.clone(),
         ui_state,
-        &filesystem_selector,
-        search.text().as_str(),
+        filesystem_selector.clone(),
+        search.text().to_string(),
     );
 }
 
 fn discover_and_load(
-    list: &gtk4::ListBox,
+    list: gtk4::ListBox,
     state: UiState,
-    selector: &gtk4::ComboBoxText,
-    query: &str,
+    selector: gtk4::ComboBoxText,
+    query: String,
 ) {
     if let Some(mountpoint) = configured_mountpoint_override() {
         state.suppress_selector_signal.set(true);
@@ -322,70 +330,85 @@ fn discover_and_load(
         return;
     }
 
-    selector.set_sensitive(true);
-    match handle_privileged(HelperRequest::DiscoverFilesystems) {
-        Ok(response) => match response.data {
-            Some(data) => match serde_json::from_value::<FilesystemDiscovery>(data) {
-                Ok(discovery) => {
-                    state.suppress_selector_signal.set(true);
-                    selector.remove_all();
-                    for filesystem in &discovery.filesystems {
-                        selector.append_text(&filesystem_label(filesystem));
-                    }
-                    let active_index = preferred_filesystem_index(&discovery);
-                    *state.filesystems.borrow_mut() = discovery;
-                    if let Some(index) = active_index {
-                        selector.set_active(Some(index as u32));
-                        state.suppress_selector_signal.set(false);
-                        let mountpoint = {
-                            let filesystems = state.filesystems.borrow();
-                            selected_mountpoint(&filesystems, index)
-                        };
-                        if let Some(mountpoint) = mountpoint {
-                            load_mountpoint(list, state, query, mountpoint);
+    set_status_row(&list, "Loading", "Discovering Btrfs filesystems…");
+    state.spinner.start();
+    selector.set_sensitive(false);
+
+    glib::MainContext::default().spawn_local(async move {
+        let result = handle_privileged_async(HelperRequest::DiscoverFilesystems).await;
+        state.spinner.stop();
+        selector.set_sensitive(true);
+        match result {
+            Ok(response) => match response.data {
+                Some(data) => match serde_json::from_value::<FilesystemDiscovery>(data) {
+                    Ok(discovery) => {
+                        state.suppress_selector_signal.set(true);
+                        selector.remove_all();
+                        for filesystem in &discovery.filesystems {
+                            selector.append_text(&filesystem_label(filesystem));
                         }
-                    } else {
-                        state.suppress_selector_signal.set(false);
-                        set_status_row(
-                            list,
-                            "No Btrfs filesystems found",
-                            "Discovery returned no mountpoints",
-                        );
+                        let active_index = preferred_filesystem_index(&discovery);
+                        *state.filesystems.borrow_mut() = discovery;
+                        if let Some(index) = active_index {
+                            selector.set_active(Some(index as u32));
+                            state.suppress_selector_signal.set(false);
+                            let mountpoint = {
+                                let filesystems = state.filesystems.borrow();
+                                selected_mountpoint(&filesystems, index)
+                            };
+                            if let Some(mountpoint) = mountpoint {
+                                load_mountpoint(list, state, query, mountpoint);
+                            }
+                        } else {
+                            state.suppress_selector_signal.set(false);
+                            set_status_row(
+                                &list,
+                                "No Btrfs filesystems found",
+                                "Discovery returned no mountpoints",
+                            );
+                        }
                     }
-                }
-                Err(err) => set_status_row(
-                    list,
-                    "Failed to read filesystem discovery",
-                    &err.to_string(),
-                ),
+                    Err(err) => set_status_row(
+                        &list,
+                        "Failed to read filesystem discovery",
+                        &err.to_string(),
+                    ),
+                },
+                None => set_status_row(&list, "No filesystem discovery returned", &response.message),
             },
-            None => set_status_row(list, "No filesystem discovery returned", &response.message),
-        },
-        Err(err) => set_status_row(list, "Filesystem discovery failed", &err.to_string()),
-    }
+            Err(err) => set_status_row(&list, "Filesystem discovery failed", &err.to_string()),
+        }
+    });
 }
 
 fn configured_mountpoint_override() -> Option<PathBuf> {
     std::env::var_os("BTRFS_MANAGER_MOUNTPOINT").map(PathBuf::from)
 }
 
-fn load_mountpoint(list: &gtk4::ListBox, state: UiState, query: &str, mountpoint: PathBuf) {
-    clear_list(list);
-    set_status_row(list, "Loading", &mountpoint.display().to_string());
+fn load_mountpoint(list: gtk4::ListBox, state: UiState, query: String, mountpoint: PathBuf) {
+    clear_list(&list);
+    set_status_row(&list, "Loading", &mountpoint.display().to_string());
+    state.spinner.start();
 
-    match handle_privileged(HelperRequest::ListSubvolumes { mountpoint }) {
-        Ok(response) => match response.data {
-            Some(data) => match serde_json::from_value::<SubvolumeInventory>(data) {
-                Ok(inventory) => {
-                    *state.inventory.borrow_mut() = Some(inventory.clone());
-                    render_inventory(list, &inventory, query, state);
-                }
-                Err(err) => set_status_row(list, "Failed to read inventory", &err.to_string()),
+    glib::MainContext::default().spawn_local(async move {
+        let result = handle_privileged_async(HelperRequest::ListSubvolumes {
+            mountpoint: mountpoint.clone(),
+        }).await;
+        state.spinner.stop();
+        match result {
+            Ok(response) => match response.data {
+                Some(data) => match serde_json::from_value::<SubvolumeInventory>(data) {
+                    Ok(inventory) => {
+                        *state.inventory.borrow_mut() = Some(inventory.clone());
+                        render_inventory(&list, &inventory, &query, state);
+                    }
+                    Err(err) => set_status_row(&list, "Failed to read inventory", &err.to_string()),
+                },
+                None => set_status_row(&list, "No structured data returned", &response.message),
             },
-            None => set_status_row(list, "No structured data returned", &response.message),
-        },
-        Err(err) => set_status_row(list, "Discovery failed", &err.to_string()),
-    }
+            Err(err) => set_status_row(&list, "Discovery failed", &err.to_string()),
+        }
+    });
 }
 
 fn preferred_filesystem_index(discovery: &FilesystemDiscovery) -> Option<usize> {
@@ -421,6 +444,12 @@ fn filesystem_label(filesystem: &btrfs_manager_core::models::FilesystemSummary) 
         .map(|device| device.display().to_string())
         .unwrap_or_else(|| "unknown device".to_string());
     format!("{mountpoint} on {device}")
+}
+
+async fn handle_privileged_async(request: HelperRequest) -> anyhow::Result<HelperResponse> {
+    gio::spawn_blocking(move || handle_privileged(request))
+        .await
+        .map_err(|_| anyhow::anyhow!("helper thread panicked"))?
 }
 
 fn handle_privileged(request: HelperRequest) -> anyhow::Result<HelperResponse> {
@@ -482,10 +511,6 @@ fn browse_mount_root() -> PathBuf {
 
 fn managed_mount_roots_exist() -> bool {
     browse_mount_root().exists()
-}
-
-fn snapshot_subtitle(id: u64, mounted: bool, target: &std::path::Path) -> String {
-    snapshot_subtitle_full(id, mounted, target, &[])
 }
 
 fn snapshot_subtitle_full(id: u64, mounted: bool, target: &std::path::Path, tags: &[String]) -> String {
@@ -815,32 +840,34 @@ fn render_snapshot_row(
     let tags_for_unmount = snapshot.tags.clone();
     let is_unlocked_for_browse = snapshot.unlocked;
     browse.connect_clicked(move |_| {
-        match browse_snapshot_readonly(mountpoint.clone(), relative_path.clone(), is_unlocked_for_browse) {
-            Ok(mounted) => {
-                state_for_browse
-                    .mounted_snapshots
-                    .borrow_mut()
-                    .insert(mounted.target.clone());
-                state_for_browse
-                    .session_mounts
-                    .borrow_mut()
-                    .extend(mounted.created_mounts.iter().cloned());
-                row_for_browse.set_subtitle(&snapshot_subtitle_full(
-                    snapshot_id,
-                    true,
-                    &mounted.target,
-                    &tags_for_browse,
-                ));
-                browse_for_browse.set_sensitive(false);
-                unmount_for_browse.set_sensitive(true);
-                let msg = mounted.warning.as_deref().unwrap_or("Snapshot mounted");
-                show_toast(&state_for_browse.toast_overlay, msg);
+        let mountpoint = mountpoint.clone();
+        let relative_path = relative_path.clone();
+        let row = row_for_browse.clone();
+        let browse_btn = browse_for_browse.clone();
+        let unmount_btn = unmount_for_browse.clone();
+        let state = state_for_browse.clone();
+        let tags = tags_for_browse.clone();
+        state.spinner.start();
+        glib::MainContext::default().spawn_local(async move {
+            let result = gio::spawn_blocking(move || {
+                browse_snapshot_readonly(mountpoint, relative_path, is_unlocked_for_browse)
+            }).await
+            .map_err(|_| anyhow::anyhow!("browse thread panicked"))
+            .and_then(|r| r);
+            state.spinner.stop();
+            match result {
+                Ok(mounted) => {
+                    state.mounted_snapshots.borrow_mut().insert(mounted.target.clone());
+                    state.session_mounts.borrow_mut().extend(mounted.created_mounts.iter().cloned());
+                    row.set_subtitle(&snapshot_subtitle_full(snapshot_id, true, &mounted.target, &tags));
+                    browse_btn.set_sensitive(false);
+                    unmount_btn.set_sensitive(true);
+                    let msg = mounted.warning.as_deref().unwrap_or("Snapshot mounted");
+                    show_toast(&state.toast_overlay, msg);
+                }
+                Err(err) => show_toast(&state.toast_overlay, &format!("Failed to browse snapshot: {err}")),
             }
-            Err(err) => show_toast(
-                &state_for_browse.toast_overlay,
-                &format!("Failed to browse snapshot: {err}"),
-            ),
-        }
+        });
     });
 
     let row_for_unmount = row.clone();
@@ -849,29 +876,27 @@ fn render_snapshot_row(
     let state_for_unmount = state.clone();
     let target_for_unmount = target.clone();
     unmount.connect_clicked(move |_| {
-        match handle_privileged(HelperRequest::UnmountSnapshot {
-            target: target_for_unmount.clone(),
-        }) {
-            Ok(_) => {
-                state_for_unmount
-                    .mounted_snapshots
-                    .borrow_mut()
-                    .remove(&target_for_unmount);
-                row_for_unmount.set_subtitle(&snapshot_subtitle_full(
-                    snapshot_id,
-                    false,
-                    &target_for_unmount,
-                    &tags_for_unmount,
-                ));
-                browse_for_unmount.set_sensitive(true);
-                unmount_for_unmount.set_sensitive(false);
-                show_toast(&state_for_unmount.toast_overlay, "Snapshot unmounted");
+        let target = target_for_unmount.clone();
+        let row = row_for_unmount.clone();
+        let browse_btn = browse_for_unmount.clone();
+        let unmount_btn = unmount_for_unmount.clone();
+        let state = state_for_unmount.clone();
+        let tags = tags_for_unmount.clone();
+        glib::MainContext::default().spawn_local(async move {
+            match handle_privileged_async(HelperRequest::UnmountSnapshot { target: target.clone() }).await {
+                Ok(_) => {
+                    state.mounted_snapshots.borrow_mut().remove(&target);
+                    row.set_subtitle(&snapshot_subtitle_full(snapshot_id, false, &target, &tags));
+                    browse_btn.set_sensitive(true);
+                    unmount_btn.set_sensitive(false);
+                    show_toast(&state.toast_overlay, "Snapshot unmounted");
+                }
+                Err(err) => show_toast(
+                    &state.toast_overlay,
+                    &format!("Failed to unmount snapshot: {err}"),
+                ),
             }
-            Err(err) => show_toast(
-                &state_for_unmount.toast_overlay,
-                &format!("Failed to unmount snapshot: {err}"),
-            ),
-        }
+        });
     });
 
     row.add_suffix(&browse);
@@ -935,7 +960,7 @@ fn render_snapshot_row(
                         lock_btn_c.set_visible(true);
                         row_c.add_css_class("warning");
                         show_toast(&state_c.toast_overlay, "Snapshot unlocked — handle with care");
-                        load_mountpoint(&list_c, state_c.clone(), "", mount_c.clone());
+                        load_mountpoint(list_c.clone(), state_c.clone(), String::new(), mount_c.clone());
                     }
                     Err(err) => show_toast(
                         &state_c.toast_overlay,
@@ -964,7 +989,7 @@ fn render_snapshot_row(
                     unlock_c2.set_visible(true);
                     row_for_lock.remove_css_class("warning");
                     show_toast(&state_for_lock.toast_overlay, "Snapshot locked");
-                    load_mountpoint(&list_for_lock, state_for_lock.clone(), "", mount_for_lock.clone());
+                    load_mountpoint(list_for_lock.clone(), state_for_lock.clone(), String::new(), mount_for_lock.clone());
                 }
                 Err(err) => show_toast(
                     &state_for_lock.toast_overlay,
@@ -1253,7 +1278,7 @@ fn open_create_snapshot_dialog(
             Ok(_) => {
                 window_for_create.close();
                 show_toast(&state.toast_overlay, "Snapshot created");
-                load_mountpoint(&list, state.clone(), "", mountpoint.clone());
+                load_mountpoint(list.clone(), state.clone(), String::new(), mountpoint.clone());
             }
             Err(err) => show_toast(
                 &state.toast_overlay,

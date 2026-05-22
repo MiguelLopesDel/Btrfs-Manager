@@ -7,7 +7,7 @@ rust-version.workspace = true
 
 [features]
 default = []
-gui = ["dep:gtk4", "dep:libadwaita"]
+gui = ["dep:gtk4", "dep:gio", "dep:libadwaita"]
 
 [dependencies]
 anyhow.workspace = true
@@ -15,6 +15,7 @@ btrfs-manager-helper = { path = "../helper" }
 btrfs-manager-core = { path = "../core" }
 clap.workspace = true
 gtk4 = { version = "0.10", optional = true }
+gio = { version = "0.21", optional = true }
 libadwaita = { version = "0.8", optional = true, features = ["v1_5"] }
 serde_json.workspace = true
 uuid.workspace = true

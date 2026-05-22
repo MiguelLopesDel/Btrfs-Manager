@@ -259,6 +259,7 @@ dependencies = [
  "btrfs-manager-helper",
  "chrono",
  "clap",
+ "gio",
  "gtk4",
  "libadwaita",
  "serde_json",
