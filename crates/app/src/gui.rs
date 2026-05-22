@@ -813,8 +813,9 @@ fn render_snapshot_row(
     let snapshot_id = snapshot.id.0;
     let tags_for_browse = snapshot.tags.clone();
     let tags_for_unmount = snapshot.tags.clone();
+    let is_unlocked_for_browse = snapshot.unlocked;
     browse.connect_clicked(move |_| {
-        match browse_snapshot_readonly(mountpoint.clone(), relative_path.clone()) {
+        match browse_snapshot_readonly(mountpoint.clone(), relative_path.clone(), is_unlocked_for_browse) {
             Ok(mounted) => {
                 state_for_browse
                     .mounted_snapshots
@@ -1520,7 +1521,7 @@ fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume)
     window.present();
 }
 
-fn open_in_filemanager(path: &std::path::Path) -> anyhow::Result<()> {
+fn open_in_filemanager(path: &std::path::Path, as_root: bool) -> anyhow::Result<()> {
     // When the process is running as root via sudo (dev sandbox), open the file
     // manager as the original user to avoid "running as root" warnings from apps
     // like Dolphin. SUDO_USER is set by sudo and preserved with sudo -E.
@@ -1533,17 +1534,38 @@ fn open_in_filemanager(path: &std::path::Path) -> anyhow::Result<()> {
             return Ok(());
         }
     }
+
+    if as_root {
+        // Try kdesu (KDE), then pkexec, then fall back to regular xdg-open.
+        // Opening as root is needed for snapshots of system subvolumes whose
+        // files are root-owned and need editing.
+        if which_exists("kdesu") {
+            Command::new("kdesu").args(["--", "dolphin"]).arg(path).spawn()?;
+            return Ok(());
+        }
+        if which_exists("pkexec") {
+            Command::new("pkexec").arg("xdg-open").arg(path).spawn()?;
+            return Ok(());
+        }
+    }
+
     Command::new("xdg-open").arg(path).spawn()?;
     Ok(())
+}
+
+fn which_exists(program: &str) -> bool {
+    Command::new("which").arg(program).output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 fn browse_snapshot_readonly(
     mountpoint: PathBuf,
     relative_path: PathBuf,
+    unlocked: bool,
 ) -> anyhow::Result<MountedBrowse> {
     tracing::debug!(
         mountpoint = %mountpoint.display(),
         relative_path = %relative_path.display(),
+        unlocked,
         "browse_snapshot_readonly: mounting subvolume"
     );
     let target = ensure_browse_target(&relative_path)?;
@@ -1551,15 +1573,15 @@ fn browse_snapshot_readonly(
     let _ = handle_privileged(HelperRequest::UnmountSnapshot {
         target: target.clone(),
     });
-    // Mount the snapshot as a proper btrfs subvolume — not a bind mount from the
-    // top-level mount, which would give empty stubs for nested subvolumes.
+    // Mount the snapshot as a proper btrfs subvolume. The subvolume's own ro
+    // property determines writability — no need to force -o ro.
     handle_privileged(HelperRequest::MountSubvolume {
         mountpoint,
         subvol_path: relative_path,
         target: target.clone(),
     })?;
-    tracing::debug!(target = %target.display(), "browse: opening file manager");
-    open_in_filemanager(&target)?;
+    tracing::debug!(target = %target.display(), as_root = unlocked, "browse: opening file manager");
+    open_in_filemanager(&target, unlocked)?;
     Ok(MountedBrowse {
         target: target.clone(),
         created_mounts: vec![target],
