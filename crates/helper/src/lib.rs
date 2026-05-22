@@ -1346,10 +1346,7 @@ fn retention_preview_for_policy(
 // and preview display). Callers that need an absolute path join with the
 // top-level mount point.
 fn policy_snapshot_dir(policy: &SnapshotPolicy) -> PathBuf {
-    policy
-        .snapshot_root
-        .join("btrfs-manager")
-        .join(policy.id.to_string())
+    policy.snapshot_root.join(policy.id.to_string())
 }
 
 fn sanitize_snapshot_label(path: &Path) -> String {
