@@ -833,7 +833,8 @@ fn render_snapshot_row(
                 ));
                 browse_for_browse.set_sensitive(false);
                 unmount_for_browse.set_sensitive(true);
-                show_toast(&state_for_browse.toast_overlay, "Snapshot mounted read-only");
+                let msg = mounted.warning.as_deref().unwrap_or("Snapshot mounted");
+                show_toast(&state_for_browse.toast_overlay, msg);
             }
             Err(err) => show_toast(
                 &state_for_browse.toast_overlay,
@@ -1521,36 +1522,37 @@ fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume)
     window.present();
 }
 
-fn open_in_filemanager(path: &std::path::Path, as_root: bool) -> anyhow::Result<()> {
+/// Returns None on success, or Some(warning) if as_root was requested but unavailable.
+fn open_in_filemanager(path: &std::path::Path, as_root: bool) -> anyhow::Result<Option<String>> {
     // When the process is running as root via sudo (dev sandbox), open the file
-    // manager as the original user to avoid "running as root" warnings from apps
-    // like Dolphin. SUDO_USER is set by sudo and preserved with sudo -E.
+    // manager as the original user to avoid "running as root" warnings.
     if let Ok(sudo_user) = std::env::var("SUDO_USER") {
         if !sudo_user.is_empty() {
             Command::new("runuser")
                 .args(["-u", &sudo_user, "--", "xdg-open"])
                 .arg(path)
                 .spawn()?;
-            return Ok(());
+            return Ok(None);
         }
     }
 
     if as_root {
-        // Try kdesu (KDE), then pkexec, then fall back to regular xdg-open.
-        // Opening as root is needed for snapshots of system subvolumes whose
-        // files are root-owned and need editing.
+        // kdesu opens Dolphin with a graphical password prompt — the right way
+        // on KDE to access root-owned files. pkexec xdg-open is NOT a valid
+        // fallback: root has no desktop session, so xdg-open always fails.
         if which_exists("kdesu") {
             Command::new("kdesu").args(["--", "dolphin"]).arg(path).spawn()?;
-            return Ok(());
+            return Ok(None);
         }
-        if which_exists("pkexec") {
-            Command::new("pkexec").arg("xdg-open").arg(path).spawn()?;
-            return Ok(());
-        }
+        // No privileged file manager launcher found — open normally and warn.
+        Command::new("xdg-open").arg(path).spawn()?;
+        return Ok(Some(
+            "Install kdesu (kde-cli-tools) to browse unlocked snapshots as root".into(),
+        ));
     }
 
     Command::new("xdg-open").arg(path).spawn()?;
-    Ok(())
+    Ok(None)
 }
 
 fn which_exists(program: &str) -> bool {
@@ -1581,16 +1583,18 @@ fn browse_snapshot_readonly(
         target: target.clone(),
     })?;
     tracing::debug!(target = %target.display(), as_root = unlocked, "browse: opening file manager");
-    open_in_filemanager(&target, unlocked)?;
+    let warning = open_in_filemanager(&target, unlocked)?;
     Ok(MountedBrowse {
         target: target.clone(),
         created_mounts: vec![target],
+        warning,
     })
 }
 
 struct MountedBrowse {
     target: PathBuf,
     created_mounts: Vec<PathBuf>,
+    warning: Option<String>,
 }
 
 fn browse_mount_target(source: &std::path::Path) -> PathBuf {
