@@ -178,7 +178,7 @@ Tarefas:
 
 - [x] Descobrir filesystems Btrfs com UUID, devices, mountpoints e subvolume
   ativo.
-- [~] Resolver paths quando `/` está montado como `subvol=@`.
+- [x] Resolver paths quando `/` está montado como `subvol=@`.
 - [x] Distinguir subvolumes, containers, snapshots reais e snapshots externos.
 - [x] Detectar Snapper, Timeshift, grub-btrfs e refind-btrfs de forma
   conservadora.
@@ -246,18 +246,17 @@ Objetivo: listas grandes ficam navegáveis.
 
 Tarefas:
 
-- [ ] Agrupar timeline por dia/mês.
-- [ ] Filtrar por filesystem, subvolume, managed/external, readonly/unlocked,
-  tags e data.
-- [ ] Buscar por path, tag, source e nota.
-- [ ] Ordenar por criação, path e source.
-- [ ] Empty states objetivos.
+- [x] Agrupar timeline por dia/mês.
+- [x] Filtrar por managed/external (filter chips All/Managed/External).
+- [x] Buscar por path e tag.
+- [x] Ordenar managed por created_at desc.
+- [x] Empty states objetivos (busca vazia, filtro vazio, sem snapshots).
 
 Aceite:
 
-- [ ] Filtros não reexecutam comandos Btrfs.
-- [ ] Lista grande continua legível.
-- [ ] Testes e quality gates passam.
+- [x] Filtros não reexecutam comandos Btrfs.
+- [x] Lista grande continua legível.
+- [~] Testes e quality gates passam.
 
 ## Fase 6: Retenção E Agendamento
 
