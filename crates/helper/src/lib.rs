@@ -390,7 +390,13 @@ impl<R: CommandRunner> Helper<R> {
                     ];
                     self.runner.run("mount", &mount_args)?;
 
-                    let source = top.join(&subvolume_path);
+                    // On subvol=@ systems, nested subvolumes (e.g. var/lib/portables)
+                    // are accessible at top/@/<path>, not top/<path>.
+                    let source = resolve_top_level_path(&top, &subvolume_path)
+                        .ok_or_else(|| HelperError::InvalidPolicy(format!(
+                            "subvolume path not found in top-level mount: {}",
+                            subvolume_path.display()
+                        )))?;
                     let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S");
                     let dest_name = format!("managed-{timestamp}");
                     let dest_parent = top.join(&snapshot_root);
@@ -781,7 +787,11 @@ impl<R: CommandRunner> Helper<R> {
                 Utc::now().format("%Y%m%d-%H%M%S")
             );
             let dest_abs = snap_dir_abs.join(&dest_name);
-            let source_abs = top.join(&policy.source_path);
+            let source_abs = resolve_top_level_path(&top, &policy.source_path)
+                .ok_or_else(|| HelperError::InvalidPolicy(format!(
+                    "subvolume path not found in top-level mount: {}",
+                    policy.source_path.display()
+                )))?;
 
             self.runner.run("btrfs", &[
                 "subvolume".into(), "snapshot".into(), "-r".into(),
@@ -1371,6 +1381,23 @@ fn runtime_dir_from_env() -> Option<PathBuf> {
                 return Some(PathBuf::from("/run/user").join(uid));
             }
         }
+    }
+    None
+}
+
+/// Resolves a subvolume path under a top-level Btrfs mount.
+///
+/// On `subvol=@` systems, nested subvolumes (e.g. `var/lib/portables` inside
+/// `@`) are accessible via `top/@/var/lib/portables`, not `top/var/lib/portables`.
+/// Try the direct path first, then the `@/<path>` fallback.
+fn resolve_top_level_path(top: &Path, subvolume_path: &Path) -> Option<PathBuf> {
+    let direct = top.join(subvolume_path);
+    if direct.exists() {
+        return Some(direct);
+    }
+    let via_at = top.join("@").join(subvolume_path);
+    if via_at.exists() {
+        return Some(via_at);
     }
     None
 }
