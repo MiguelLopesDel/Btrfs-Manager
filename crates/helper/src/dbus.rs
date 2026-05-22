@@ -103,7 +103,16 @@ impl HelperService {
                 serde_json::to_string(&response).map_err(to_failed)
             }
             Err(err) => {
-                tracing::error!(uid, action, request = %request_debug, error = %err, "request failed");
+                // UnmountSnapshot failures are often expected (pre-unmount cleanup
+                // when nothing was mounted yet). Log at WARN, not ERROR.
+                if matches!(
+                    serde_json::from_str::<HelperRequest>(&request_debug),
+                    Ok(HelperRequest::UnmountSnapshot { .. })
+                ) {
+                    tracing::warn!(uid, action, error = %err, "unmount failed (may be expected)");
+                } else {
+                    tracing::error!(uid, action, request = %request_debug, error = %err, "request failed");
+                }
                 Err(fdo::Error::Failed(err.to_string()))
             }
         }
