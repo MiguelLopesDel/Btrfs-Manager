@@ -234,10 +234,10 @@ Tarefas:
 
 Aceite:
 
-- [~] Usuário cria snapshot read-only pela UI.
-- [~] Snapshot aparece como gerenciado.
-- [~] Metadata sobrevive a reinício da GUI.
-- [~] Delete exige confirmação e remove só alvo correto.
+- [x] Usuário cria snapshot read-only pela UI.
+- [x] Snapshot aparece como gerenciado.
+- [x] Metadata sobrevive a reinício da GUI.
+- [x] Delete exige confirmação e remove só alvo correto.
 - [~] Testes e quality gates passam.
 
 ## Fase 5: Timeline, Busca E Filtros
@@ -269,14 +269,14 @@ Tarefas:
 - [x] Geração de systemd timers.
 - [x] Preview de retenção.
 - [x] Logs de execução.
-- [~] UI revisada e validada em host systemd real.
+- [x] UI revisada e validada em host systemd real.
 - [x] Nunca remover snapshots externos ou rollback anchors.
 - [ ] Teste de policy run em ambiente controlado.
 
 Aceite:
 
-- [ ] Timer cria snapshot sem GUI aberta.
-- [ ] Retenção remove apenas snapshots gerenciados elegíveis.
+- [x] Timer cria snapshot sem GUI aberta.
+- [~] Retenção remove apenas snapshots gerenciados elegíveis.
 - [ ] Logs aparecem na UI.
 - [ ] Testes e quality gates passam.
 
