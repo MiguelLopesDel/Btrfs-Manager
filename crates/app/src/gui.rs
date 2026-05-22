@@ -1553,7 +1553,7 @@ fn browse_snapshot_readonly(
     });
     // Mount the snapshot as a proper btrfs subvolume — not a bind mount from the
     // top-level mount, which would give empty stubs for nested subvolumes.
-    handle_privileged(HelperRequest::MountSubvolumeReadOnly {
+    handle_privileged(HelperRequest::MountSubvolume {
         mountpoint,
         subvol_path: relative_path,
         target: target.clone(),

@@ -128,7 +128,7 @@ pub fn action_for_request(request: &HelperRequest) -> &'static str {
         HelperRequest::DeleteSnapshot { .. } => ACTION_SNAPSHOT_DELETE,
         HelperRequest::SetSnapshotReadOnly { .. } => ACTION_SNAPSHOT_READONLY,
         HelperRequest::MountSnapshot { .. }
-        | HelperRequest::MountSubvolumeReadOnly { .. }
+        | HelperRequest::MountSubvolume { .. }
         | HelperRequest::MountTopLevel { .. }
         | HelperRequest::UnmountSnapshot { .. }
         | HelperRequest::CleanupManagedMounts => ACTION_MOUNT,

@@ -67,7 +67,7 @@ pub enum HelperRequest {
     /// Unlike MountSnapshot (which bind-mounts from the top-level mount and produces
     /// empty stubs for nested subvolumes), this does a real btrfs subvol mount so
     /// the full snapshot contents are visible.
-    MountSubvolumeReadOnly {
+    MountSubvolume {
         mountpoint: PathBuf,
         subvol_path: PathBuf,
         target: PathBuf,
@@ -374,7 +374,7 @@ impl<R: CommandRunner> Helper<R> {
                     data: None,
                 })
             }
-            HelperRequest::MountSubvolumeReadOnly { mountpoint, subvol_path, target } => {
+            HelperRequest::MountSubvolume { mountpoint, subvol_path, target } => {
                 validate_path(&mountpoint)?;
                 validate_path(&target)?;
                 let device_output = self.runner.run("findmnt", &[
@@ -383,7 +383,10 @@ impl<R: CommandRunner> Helper<R> {
                 ])?;
                 let device = normalize_findmnt_source(device_output.trim());
                 std::fs::create_dir_all(&target)?;
-                let subvol_opt = format!("ro,subvol={}", subvol_path.display());
+                // Do not force ro — btrfs enforces the subvolume's own ro property.
+                // A snapshot with ro=true is always read-only regardless of mount flags.
+                // An unlocked snapshot (ro=false) is mounted writable automatically.
+                let subvol_opt = format!("subvol={}", subvol_path.display());
                 self.runner.run("mount", &[
                     "-t".into(), "btrfs".into(), "-o".into(), subvol_opt,
                     device, target.display().to_string(),
@@ -391,7 +394,7 @@ impl<R: CommandRunner> Helper<R> {
                 tracing::info!(
                     subvol = %subvol_path.display(),
                     target = %target.display(),
-                    "subvolume mounted read-only"
+                    "subvolume mounted (writability determined by subvolume ro property)"
                 );
                 Ok(HelperResponse {
                     ok: true,
