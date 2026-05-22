@@ -205,11 +205,15 @@ impl<R: CommandRunner> Helper<R> {
                 let output = self.runner.run("btrfs", &args)?;
                 let mut subvolumes = parse_btrfs_subvolume_list(&output)?;
                 classify_subvolumes(&mut subvolumes);
-                // Mark subvolumes that have a managed snapshot record in SQLite.
-                if let Ok(managed) = StateStore::open().and_then(|s| s.list_managed_snapshot_paths()) {
-                    for subvolume in &mut subvolumes {
-                        if managed.contains(&subvolume.path) {
-                            subvolume.managed = true;
+                // Enrich managed subvolumes with SQLite metadata (tags, created_at).
+                if let Ok(store) = StateStore::open() {
+                    if let Ok(snapshots) = store.list_all_managed_snapshots() {
+                        for subvolume in &mut subvolumes {
+                            if let Some(snap) = snapshots.iter().find(|s| s.path == subvolume.path) {
+                                subvolume.managed = true;
+                                subvolume.tags = snap.tags.clone();
+                                subvolume.created_at = Some(snap.created_at);
+                            }
                         }
                     }
                 }
@@ -1017,17 +1021,6 @@ impl StateStore {
             .query_map([], snapshot_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(snapshots)
-    }
-
-    fn list_managed_snapshot_paths(&self) -> Result<std::collections::HashSet<PathBuf>, HelperError> {
-        let mut stmt = self.connection.prepare("SELECT path FROM managed_snapshots")?;
-        let paths = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(PathBuf::from)
-            .collect();
-        Ok(paths)
     }
 
     fn find_managed_snapshot_id_by_path(&self, path: &Path) -> Result<Uuid, HelperError> {

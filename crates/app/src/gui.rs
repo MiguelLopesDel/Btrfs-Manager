@@ -5,6 +5,7 @@ use btrfs_manager_helper::{
     FilesystemDiscovery, Helper, HelperRequest, HelperResponse, SubvolumeInventory,
     SystemCommandRunner,
 };
+use chrono::{DateTime, Datelike, Local, Utc};
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
@@ -19,6 +20,14 @@ use uuid::Uuid;
 use anyhow::Context as _;
 use crate::dbus_client;
 
+#[derive(Clone, Default, PartialEq, Eq)]
+enum SnapshotFilter {
+    #[default]
+    All,
+    Managed,
+    External,
+}
+
 #[derive(Clone)]
 struct UiState {
     inventory: Rc<RefCell<Option<SubvolumeInventory>>>,
@@ -27,6 +36,7 @@ struct UiState {
     filesystems: Rc<RefCell<FilesystemDiscovery>>,
     suppress_selector_signal: Rc<Cell<bool>>,
     toast_overlay: libadwaita::ToastOverlay,
+    filter: Rc<RefCell<SnapshotFilter>>,
 }
 
 pub fn run() {
@@ -94,6 +104,27 @@ fn build_ui(app: &libadwaita::Application) {
         .hexpand(true)
         .build();
 
+    // Filter chips: All / Managed / External
+    let filter_all = gtk4::ToggleButton::builder()
+        .label("All")
+        .active(true)
+        .build();
+    let filter_managed = gtk4::ToggleButton::builder()
+        .label("Managed")
+        .group(&filter_all)
+        .build();
+    let filter_external = gtk4::ToggleButton::builder()
+        .label("External")
+        .group(&filter_all)
+        .build();
+    let filter_row = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(4)
+        .build();
+    filter_row.append(&filter_all);
+    filter_row.append(&filter_managed);
+    filter_row.append(&filter_external);
+
     let list = gtk4::ListBox::builder()
         .selection_mode(gtk4::SelectionMode::Single)
         .css_classes(["boxed-list"])
@@ -125,6 +156,7 @@ fn build_ui(app: &libadwaita::Application) {
     content.append(&title);
     content.append(&filesystem_selector);
     content.append(&search);
+    content.append(&filter_row);
     content.append(&list_scroll);
 
     let root = gtk4::Box::builder()
@@ -143,7 +175,33 @@ fn build_ui(app: &libadwaita::Application) {
         filesystems: filesystem_state,
         suppress_selector_signal,
         toast_overlay: toast_overlay.clone(),
+        filter: Rc::new(RefCell::new(SnapshotFilter::All)),
     };
+
+    // Wire filter chips to re-render without issuing new Btrfs commands.
+    for (btn, value) in [
+        (&filter_all, SnapshotFilter::All),
+        (&filter_managed, SnapshotFilter::Managed),
+        (&filter_external, SnapshotFilter::External),
+    ] {
+        let state_for_filter = ui_state.clone();
+        let list_for_filter = list.clone();
+        let search_for_filter = search.clone();
+        btn.connect_toggled(move |b| {
+            if !b.is_active() {
+                return;
+            }
+            *state_for_filter.filter.borrow_mut() = value.clone();
+            if let Some(inventory) = state_for_filter.inventory.borrow().as_ref() {
+                render_inventory(
+                    &list_for_filter,
+                    inventory,
+                    search_for_filter.text().as_str(),
+                    state_for_filter.clone(),
+                );
+            }
+        });
+    }
 
     let state_for_cleanup = ui_state.clone();
     cleanup.connect_clicked(move |_| {
@@ -427,11 +485,18 @@ fn managed_mount_roots_exist() -> bool {
 }
 
 fn snapshot_subtitle(id: u64, mounted: bool, target: &std::path::Path) -> String {
-    if mounted {
-        format!("ID {id} · mounted at {}", target.display())
-    } else {
-        format!("ID {id}")
+    snapshot_subtitle_full(id, mounted, target, &[])
+}
+
+fn snapshot_subtitle_full(id: u64, mounted: bool, target: &std::path::Path, tags: &[String]) -> String {
+    let mut parts = vec![format!("ID {id}")];
+    if !tags.is_empty() {
+        parts.push(tags.join(", "));
     }
+    if mounted {
+        parts.push(format!("mounted at {}", target.display()));
+    }
+    parts.join(" · ")
 }
 
 fn show_toast(toast_overlay: &libadwaita::ToastOverlay, message: &str) {
@@ -502,6 +567,24 @@ fn append_info_row(list: &gtk4::ListBox, title: &str, subtitle: &str) {
     list.append(&row);
 }
 
+fn append_date_subheader(list: &gtk4::ListBox, label: &str) {
+    let lbl = gtk4::Label::builder()
+        .label(label)
+        .halign(gtk4::Align::Start)
+        .margin_top(6)
+        .margin_bottom(2)
+        .margin_start(18)
+        .margin_end(12)
+        .css_classes(["caption", "dim-label"])
+        .build();
+    let row = gtk4::ListBoxRow::builder()
+        .selectable(false)
+        .activatable(false)
+        .child(&lbl)
+        .build();
+    list.append(&row);
+}
+
 fn append_section_header(list: &gtk4::ListBox, title: &str) {
     let label = gtk4::Label::builder()
         .label(title)
@@ -527,14 +610,36 @@ fn is_snapshot_kind(kind: &SubvolumeKind) -> bool {
     )
 }
 
-fn matches_query(path: &std::path::Path, query: &str) -> bool {
-    let query = query.trim().to_ascii_lowercase();
-    query.is_empty() || path.to_string_lossy().to_ascii_lowercase().contains(&query)
+fn matches_query(subvolume: &Subvolume, query: &str) -> bool {
+    let q = query.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    if subvolume.path.to_string_lossy().to_ascii_lowercase().contains(&q) {
+        return true;
+    }
+    subvolume.tags.iter().any(|tag| tag.to_ascii_lowercase().contains(&q))
 }
 
 fn clear_list(list: &gtk4::ListBox) {
     while let Some(row) = list.first_child() {
         list.remove(&row);
+    }
+}
+
+fn snapshot_date_group(created_at: Option<&DateTime<Utc>>) -> String {
+    let Some(dt) = created_at else {
+        return "Unknown date".into();
+    };
+    let local: chrono::DateTime<Local> = DateTime::from(*dt);
+    let today = Local::now().date_naive();
+    let date = local.date_naive();
+    if date == today {
+        "Today".into()
+    } else if date == today.pred_opt().unwrap_or(today) {
+        "Yesterday".into()
+    } else {
+        date.format("%B %d, %Y").to_string()
     }
 }
 
@@ -554,28 +659,44 @@ fn render_inventory(
         return;
     }
 
-    let snapshots: Vec<_> = inventory
+    let active_filter = state.filter.borrow().clone();
+
+    let all_snapshots: Vec<_> = inventory
         .subvolumes
         .iter()
-        .filter(|subvolume| is_snapshot_kind(&subvolume.kind))
-        .filter(|subvolume| matches_query(&subvolume.path, query))
+        .filter(|s| is_snapshot_kind(&s.kind))
         .collect();
+
+    let snapshots: Vec<_> = all_snapshots
+        .iter()
+        .copied()
+        .filter(|s| match &active_filter {
+            SnapshotFilter::All => true,
+            SnapshotFilter::Managed => s.managed,
+            SnapshotFilter::External => !s.managed,
+        })
+        .filter(|s| matches_query(s, query))
+        .collect();
+
     let subvolumes: Vec<_> = inventory
         .subvolumes
         .iter()
-        .filter(|subvolume| !is_snapshot_kind(&subvolume.kind))
-        .filter(|subvolume| matches_query(&subvolume.path, query))
+        .filter(|s| !is_snapshot_kind(&s.kind))
+        .filter(|s| matches_query(s, query))
         .collect();
 
     if snapshots.is_empty() {
         append_section_header(list, "Snapshots (0)");
-        append_info_row(
-            list,
-            "No snapshots found",
-            "Create or import snapshots to show them here",
-        );
+        let (empty_title, empty_sub) = if !query.is_empty() {
+            ("No snapshots match your search", "Try a different query or clear the search")
+        } else if active_filter != SnapshotFilter::All {
+            ("No snapshots in this category", "Try a different filter")
+        } else {
+            ("No snapshots found", "Create or import snapshots to show them here")
+        };
+        append_info_row(list, empty_title, empty_sub);
     } else {
-        // Group: managed snapshots first, then external tools sorted alphabetically.
+        // Group: managed first (by date), then external tools alphabetically.
         let mut managed: Vec<&Subvolume> = Vec::new();
         let mut by_tool: BTreeMap<String, Vec<&Subvolume>> = BTreeMap::new();
         for snapshot in &snapshots {
@@ -588,12 +709,35 @@ fn render_inventory(
                 _ => {}
             }
         }
+
         if !managed.is_empty() {
+            // Sort managed newest-first by created_at, then by path.
+            managed.sort_by(|a, b| {
+                b.created_at.cmp(&a.created_at).then(a.path.cmp(&b.path))
+            });
+
+            // Group managed by date (Today / Yesterday / date string).
+            let mut by_date: BTreeMap<(i32, String), Vec<&Subvolume>> = BTreeMap::new();
+            for snap in &managed {
+                let local_date = snap.created_at.map(|dt| {
+                    let local: chrono::DateTime<Local> = DateTime::from(dt);
+                    local.date_naive()
+                });
+                // Key: (negative day ordinal for newest-first order, label)
+                let label = snapshot_date_group(snap.created_at.as_ref());
+                let ordinal = local_date.map(|d| -(d.num_days_from_ce())).unwrap_or(i32::MAX);
+                by_date.entry((ordinal, label)).or_default().push(snap);
+            }
+
             append_section_header(list, &format!("Managed ({})", managed.len()));
-            for snapshot in &managed {
-                render_snapshot_row(list, snapshot, &inventory.mountpoint, state.clone());
+            for ((_ord, date_label), group) in &by_date {
+                append_date_subheader(list, date_label);
+                for snap in group {
+                    render_snapshot_row(list, snap, &inventory.mountpoint, state.clone());
+                }
             }
         }
+
         for (label, group) in &by_tool {
             append_section_header(list, &format!("{label} ({})", group.len()));
             for snapshot in group {
@@ -659,9 +803,10 @@ fn render_snapshot_row(
     let relative_path = snapshot.path.clone();
     let target = browse_mount_target(&relative_path);
     let is_mounted = state.mounted_snapshots.borrow().contains(&target);
+    let subtitle = snapshot_subtitle_full(snapshot.id.0, is_mounted, &target, &snapshot.tags);
     let row = libadwaita::ActionRow::builder()
         .title(snapshot.path.display().to_string())
-        .subtitle(snapshot_subtitle(snapshot.id.0, is_mounted, &target))
+        .subtitle(subtitle)
         .build();
     let browse = gtk4::Button::builder()
         .icon_name("folder-open-symbolic")
