@@ -87,6 +87,7 @@ impl HelperService {
             .map_err(|err| fdo::Error::InvalidArgs(err.to_string()))?;
         let action = action_for_request(&request);
         let uid = self.authorize(&header, &request).await?;
+        let is_unmount = matches!(request, HelperRequest::UnmountSnapshot { .. });
         let request_debug = format!("{request:?}");
         tracing::info!(uid, action, "handling request");
         // Helper::handle() executes btrfs/mount/systemctl — blocking calls that
@@ -105,10 +106,7 @@ impl HelperService {
             Err(err) => {
                 // UnmountSnapshot failures are often expected (pre-unmount cleanup
                 // when nothing was mounted yet). Log at WARN, not ERROR.
-                if matches!(
-                    serde_json::from_str::<HelperRequest>(&request_debug),
-                    Ok(HelperRequest::UnmountSnapshot { .. })
-                ) {
+                if is_unmount {
                     tracing::warn!(uid, action, error = %err, "unmount failed (may be expected)");
                 } else {
                     tracing::error!(uid, action, request = %request_debug, error = %err, "request failed");
