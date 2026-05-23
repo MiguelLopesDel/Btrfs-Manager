@@ -1580,20 +1580,26 @@ fn open_in_filemanager(path: &std::path::Path, as_root: bool) -> anyhow::Result<
     Ok(None)
 }
 
-/// Returns the full path of an executable, checking PATH first then known prefixes.
-/// Always returns the path actually used in Command::new to avoid PATH-mismatch errors.
+/// Returns the full path of an executable, checking known prefixes then PATH.
+/// Always returns the path used in Command::new so the caller never relies on
+/// PATH resolution (which may be minimal when running under D-Bus).
 fn find_executable(program: &str) -> Option<std::path::PathBuf> {
-    // Only check directories that hold user-facing executables, not internal
-    // KDE helper paths like /usr/lib/kf6 (those are not directly runnable).
-    for prefix in ["/usr/bin", "/usr/local/bin"] {
+    // Check standard bin dirs and KDE's libexec dir (on Arch, kde-cli-tools
+    // installs /usr/lib/kf6/kdesu without a /usr/bin/kdesu symlink).
+    for prefix in ["/usr/bin", "/usr/local/bin", "/usr/lib/kf6"] {
         let p = std::path::Path::new(prefix).join(program);
         if p.exists() {
             return Some(p);
         }
     }
-    // PATH-based fallback (works in interactive shells; may fail under D-Bus).
-    if Command::new("which").arg(program).output().map(|o| o.status.success()).unwrap_or(false) {
-        return Some(std::path::PathBuf::from(program));
+    // PATH-based fallback for non-standard installs.
+    if let Ok(out) = Command::new("which").arg(program).output() {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(std::path::PathBuf::from(path));
+            }
+        }
     }
     None
 }
