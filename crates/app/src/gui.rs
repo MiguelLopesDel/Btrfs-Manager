@@ -1581,7 +1581,17 @@ fn open_in_filemanager(path: &std::path::Path, as_root: bool) -> anyhow::Result<
 }
 
 fn which_exists(program: &str) -> bool {
-    Command::new("which").arg(program).output().map(|o| o.status.success()).unwrap_or(false)
+    // Use PATH-based search first, then fall back to common prefix directories.
+    // Running via D-Bus may inherit a minimal PATH that misses /usr/bin.
+    if Command::new("which").arg(program).output().map(|o| o.status.success()).unwrap_or(false) {
+        return true;
+    }
+    for prefix in ["/usr/bin", "/usr/local/bin", "/usr/lib/kf6", "/usr/lib/kde4/libexec"] {
+        if std::path::Path::new(prefix).join(program).exists() {
+            return true;
+        }
+    }
+    false
 }
 
 fn browse_snapshot_readonly(
