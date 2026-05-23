@@ -1565,8 +1565,8 @@ fn open_in_filemanager(path: &std::path::Path, as_root: bool) -> anyhow::Result<
         // kdesu opens Dolphin with a graphical password prompt — the right way
         // on KDE to access root-owned files. pkexec xdg-open is NOT a valid
         // fallback: root has no desktop session, so xdg-open always fails.
-        if which_exists("kdesu") {
-            Command::new("kdesu").args(["--", "dolphin"]).arg(path).spawn()?;
+        if let Some(kdesu) = find_executable("kdesu") {
+            Command::new(kdesu).args(["--", "dolphin"]).arg(path).spawn()?;
             return Ok(None);
         }
         // No privileged file manager launcher found — open normally and warn.
@@ -1580,18 +1580,22 @@ fn open_in_filemanager(path: &std::path::Path, as_root: bool) -> anyhow::Result<
     Ok(None)
 }
 
-fn which_exists(program: &str) -> bool {
-    // Use PATH-based search first, then fall back to common prefix directories.
-    // Running via D-Bus may inherit a minimal PATH that misses /usr/bin.
-    if Command::new("which").arg(program).output().map(|o| o.status.success()).unwrap_or(false) {
-        return true;
-    }
-    for prefix in ["/usr/bin", "/usr/local/bin", "/usr/lib/kf6", "/usr/lib/kde4/libexec"] {
-        if std::path::Path::new(prefix).join(program).exists() {
-            return true;
+/// Returns the full path of an executable, checking PATH first then known prefixes.
+/// Always returns the path actually used in Command::new to avoid PATH-mismatch errors.
+fn find_executable(program: &str) -> Option<std::path::PathBuf> {
+    // Only check directories that hold user-facing executables, not internal
+    // KDE helper paths like /usr/lib/kf6 (those are not directly runnable).
+    for prefix in ["/usr/bin", "/usr/local/bin"] {
+        let p = std::path::Path::new(prefix).join(program);
+        if p.exists() {
+            return Some(p);
         }
     }
-    false
+    // PATH-based fallback (works in interactive shells; may fail under D-Bus).
+    if Command::new("which").arg(program).output().map(|o| o.status.success()).unwrap_or(false) {
+        return Some(std::path::PathBuf::from(program));
+    }
+    None
 }
 
 fn browse_snapshot_readonly(
