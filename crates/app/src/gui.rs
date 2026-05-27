@@ -1562,11 +1562,11 @@ fn open_in_filemanager(path: &std::path::Path, as_root: bool) -> anyhow::Result<
     }
 
     if as_root {
-        // kdesu opens Dolphin with a graphical password prompt — the right way
-        // on KDE to access root-owned files. pkexec xdg-open is NOT a valid
-        // fallback: root has no desktop session, so xdg-open always fails.
+        // Use kdesu -t (sudo mode) so it prompts for the user's password rather
+        // than the root password. On Arch and most modern distros the root account
+        // is locked, so kdesu without -t always fails.
         if let Some(kdesu) = find_executable("kdesu") {
-            Command::new(kdesu).args(["--", "dolphin"]).arg(path).spawn()?;
+            Command::new(kdesu).args(["-t", "--", "dolphin"]).arg(path).spawn()?;
             return Ok(None);
         }
         // No privileged file manager launcher found — open normally and warn.
