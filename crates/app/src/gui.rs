@@ -1547,10 +1547,9 @@ fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume)
     window.present();
 }
 
-/// Returns None on success, or Some(warning) if as_root was requested but unavailable.
+/// Returns None on success, or Some(warning) on partial success (opened without root).
 fn open_in_filemanager(path: &std::path::Path, as_root: bool) -> anyhow::Result<Option<String>> {
-    // When the process is running as root via sudo (dev sandbox), open the file
-    // manager as the original user to avoid "running as root" warnings.
+    // Dev sandbox: app was launched via sudo, open as the original user.
     if let Ok(sudo_user) = std::env::var("SUDO_USER") {
         if !sudo_user.is_empty() {
             Command::new("runuser")
@@ -1562,46 +1561,25 @@ fn open_in_filemanager(path: &std::path::Path, as_root: bool) -> anyhow::Result<
     }
 
     if as_root {
-        // Use kdesu -t (sudo mode) so it prompts for the user's password rather
-        // than the root password. On Arch and most modern distros the root account
-        // is locked, so kdesu without -t always fails.
-        if let Some(kdesu) = find_executable("kdesu") {
-            Command::new(kdesu).args(["-t", "--", "dolphin"]).arg(path).spawn()?;
-            return Ok(None);
-        }
-        // No privileged file manager launcher found — open normally and warn.
-        Command::new("xdg-open").arg(path).spawn()?;
-        return Ok(Some(
-            "Install kdesu (kde-cli-tools) to browse unlocked snapshots as root".into(),
-        ));
+        // Delegate to the helper (which runs as root). The helper spawns the
+        // file manager with the user's display environment, so the window
+        // appears on the user's desktop. Works on X11 and Wayland without
+        // any extra dependencies.
+        let display = std::env::var("DISPLAY").unwrap_or_default();
+        let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+        let xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+        tracing::debug!("requesting root file manager via helper: {}", path.display());
+        handle_privileged(HelperRequest::OpenFileManager {
+            path: path.to_path_buf(),
+            display,
+            wayland_display,
+            xdg_runtime_dir,
+        })?;
+        return Ok(None);
     }
 
     Command::new("xdg-open").arg(path).spawn()?;
     Ok(None)
-}
-
-/// Returns the full path of an executable, checking known prefixes then PATH.
-/// Always returns the path used in Command::new so the caller never relies on
-/// PATH resolution (which may be minimal when running under D-Bus).
-fn find_executable(program: &str) -> Option<std::path::PathBuf> {
-    // Check standard bin dirs and KDE's libexec dir (on Arch, kde-cli-tools
-    // installs /usr/lib/kf6/kdesu without a /usr/bin/kdesu symlink).
-    for prefix in ["/usr/bin", "/usr/local/bin", "/usr/lib/kf6"] {
-        let p = std::path::Path::new(prefix).join(program);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    // PATH-based fallback for non-standard installs.
-    if let Ok(out) = Command::new("which").arg(program).output() {
-        if out.status.success() {
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(std::path::PathBuf::from(path));
-            }
-        }
-    }
-    None
 }
 
 fn browse_snapshot_readonly(

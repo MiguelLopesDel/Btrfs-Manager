@@ -135,6 +135,7 @@ pub fn action_for_request(request: &HelperRequest) -> &'static str {
         HelperRequest::SetManagedSnapshotReadOnly { .. } => ACTION_SNAPSHOT_READONLY,
         HelperRequest::DeleteManagedSnapshot { .. } => ACTION_SNAPSHOT_DELETE,
         HelperRequest::StageRollback { .. } => ACTION_ROLLBACK,
+        HelperRequest::OpenFileManager { .. } => ACTION_MOUNT,
         HelperRequest::ListSnapshotPolicies
         | HelperRequest::PreviewRetention { .. }
         | HelperRequest::PreviewRetentionForPolicy { .. }

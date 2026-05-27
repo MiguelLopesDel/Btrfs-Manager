@@ -127,6 +127,14 @@ pub enum HelperRequest {
     ListPolicyRunLogs {
         policy_id: Uuid,
     },
+    /// Open a file manager as root, passing the calling user's display
+    /// environment so the window appears on their desktop.
+    OpenFileManager {
+        path: PathBuf,
+        display: String,
+        wayland_display: String,
+        xdg_runtime_dir: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -609,6 +617,29 @@ impl<R: CommandRunner> Helper<R> {
                     ok: true,
                     message: format!("found {} policy run log(s)", logs.len()),
                     data: Some(serde_json::to_value(logs)?),
+                })
+            }
+            HelperRequest::OpenFileManager { path, display, wayland_display, xdg_runtime_dir } => {
+                validate_absolute_no_traversal(&path)?;
+                // Find a supported file manager.
+                let fm = ["/usr/bin/dolphin", "/usr/bin/nautilus", "/usr/bin/thunar", "/usr/bin/nemo"]
+                    .iter()
+                    .find(|p| std::path::Path::new(p).exists())
+                    .ok_or_else(|| std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "no supported file manager found (tried dolphin, nautilus, thunar, nemo)",
+                    ))?;
+                tracing::info!(path = %path.display(), fm, "opening file manager as root");
+                std::process::Command::new(fm)
+                    .arg(&path)
+                    .env("DISPLAY", &display)
+                    .env("WAYLAND_DISPLAY", &wayland_display)
+                    .env("XDG_RUNTIME_DIR", &xdg_runtime_dir)
+                    .spawn()?;
+                Ok(HelperResponse {
+                    ok: true,
+                    message: format!("file manager opened at {}", path.display()),
+                    data: None,
                 })
             }
         }
