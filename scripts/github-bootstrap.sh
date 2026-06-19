@@ -76,6 +76,7 @@ required_checks=(
   "Documentation"
   "GUI Documentation"
   "Shell And Packaging"
+  "AUR Package"
   "Analyze"
 )
 

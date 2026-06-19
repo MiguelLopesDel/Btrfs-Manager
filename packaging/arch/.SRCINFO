@@ -1,0 +1,26 @@
+pkgbase = btrfs-manager-git
+	pkgdesc = Modern desktop manager for Btrfs subvolumes and snapshots
+	pkgver = 0.1.0.r48.g1eb6e584882c
+	pkgrel = 1
+	url = https://github.com/MiguelLopesDel/Btrfs-Manager
+	install = btrfs-manager-git.install
+	arch = x86_64
+	license = GPL-3.0-or-later
+	makedepends = rust
+	makedepends = cargo
+	makedepends = git
+	depends = btrfs-progs
+	depends = dbus
+	depends = gtk4
+	depends = libadwaita
+	depends = polkit
+	depends = systemd
+	depends = xdg-utils
+	optdepends = grub-btrfs: GRUB snapshot boot integration
+	optdepends = refind-btrfs: rEFInd snapshot boot integration
+	provides = btrfs-manager
+	conflicts = btrfs-manager
+	source = btrfs-manager-git::git+https://github.com/MiguelLopesDel/Btrfs-Manager.git#branch=main
+	sha256sums = SKIP
+
+pkgname = btrfs-manager-git

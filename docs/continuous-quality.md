@@ -56,6 +56,8 @@ The required GitHub checks are:
 - `TDD Regression Evidence`: source changes must include tests or an explicit justification.
 - `Documentation` and `GUI Documentation`: rustdoc and Markdown validation.
 - `Shell And Packaging`: shellcheck, Polkit XML, and desktop file validation.
+- `AUR Package`: validates `.SRCINFO`, runs `namcap`, and builds the Arch
+  `btrfs-manager-git` package from the `main` branch source.
 - `Analyze`: CodeQL scans Rust and shell-relevant changes.
 
 ## Quality ratchet

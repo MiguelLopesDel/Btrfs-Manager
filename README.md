@@ -57,6 +57,16 @@ The GUI feature requires native GTK4/libadwaita development packages:
 cargo run -p btrfs-manager-app --features gui
 ```
 
+## Arch package
+
+The AUR package definition lives in `packaging/arch` as `btrfs-manager-git`.
+It builds directly from the repository `main` branch:
+
+```sh
+cd packaging/arch
+makepkg -si
+```
+
 Installed GUI builds use only the system D-Bus helper service for Btrfs/system
 operations. They do not call `pkexec` or the helper CLI directly. For repository
 development only, set `BTRFS_MANAGER_DEV_LOCAL_HELPER=1` to use the in-process

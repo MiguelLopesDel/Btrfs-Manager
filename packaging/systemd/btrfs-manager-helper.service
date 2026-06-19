@@ -1,6 +1,6 @@
 [Unit]
 Description=Btrfs Manager Privileged Helper
-Documentation=https://example.invalid/btrfs-manager
+Documentation=https://github.com/MiguelLopesDel/Btrfs-Manager
 After=dbus.service
 
 [Service]

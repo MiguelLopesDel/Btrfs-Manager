@@ -203,6 +203,41 @@ jobs:
       - run: xmllint --noout packaging/polkit/org.btrfsmanager.helper.policy
       - run: desktop-file-validate packaging/linux/org.btrfsmanager.App.desktop
 
+  aur-package:
+    name: AUR Package
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install package validators
+        run: |
+          pacman -Syu --noconfirm --needed \
+            btrfs-progs \
+            cargo \
+            dbus \
+            desktop-file-utils \
+            git \
+            gtk4 \
+            libadwaita \
+            libxml2 \
+            namcap \
+            polkit \
+            rust \
+            systemd \
+            xdg-utils
+      - name: Validate AUR metadata
+        run: |
+          bash -n packaging/arch/PKGBUILD
+          bash -n packaging/arch/btrfs-manager-git.install
+          namcap packaging/arch/PKGBUILD
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c "cd '$GITHUB_WORKSPACE/packaging/arch' && makepkg --printsrcinfo > .SRCINFO.generated"
+          diff -u packaging/arch/.SRCINFO packaging/arch/.SRCINFO.generated
+      - name: Build AUR package
+        run: |
+          su builder -c "cd '$GITHUB_WORKSPACE/packaging/arch' && makepkg --nodeps --noarchive --noconfirm"
+
   e2e-headless:
     name: Headless GUI E2E
     runs-on: ubuntu-latest

@@ -3,7 +3,7 @@
   "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
 <policyconfig>
   <vendor>Btrfs Manager</vendor>
-  <vendor_url>https://example.invalid/btrfs-manager</vendor_url>
+  <vendor_url>https://github.com/MiguelLopesDel/Btrfs-Manager</vendor_url>
   <action id="org.btrfsmanager.helper.discovery">
     <description>Inspect Btrfs filesystems and subvolumes</description>
     <message>Authentication is required to inspect Btrfs filesystems.</message>
