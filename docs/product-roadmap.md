@@ -91,8 +91,8 @@ Estados permitidos:
 
 ## Estado Atual
 
-O projeto já tem um protótipo funcional amplo, mas nem tudo deve ser tratado
-como pronto.
+O projeto já tem um protótipo funcional amplo cobrindo Fases 1–7, mas nem
+tudo está validado conforme a Definition of Done.
 
 Concluído:
 
@@ -104,20 +104,21 @@ Concluído:
 - [x] Quality gates iniciais no repositório e GitHub Actions.
 - [x] Script loopback Btrfs com falha segura quando loop device não existe.
 
-Em protótipo:
+Em protótipo (implementado, pendente validação completa):
 
 - [~] Serviço D-Bus e ações Polkit.
 - [~] GUI GTK/libadwaita.
 - [~] Discovery de filesystems reais.
-- [~] Browse read-only de snapshots.
+- [~] Browse read-only de snapshots com abertura no file manager (via helper root).
 - [~] Cleanup de mounts temporários.
+- [~] UI de criação manual de snapshot com tags.
 - [~] Agendamento/retenção via systemd timer.
+- [~] Unlock/lock de snapshots gerenciados com confirmação e estado visual.
+- [~] Timeline com filtros de período, agrupamento por dia/hora e busca por data.
 - [~] Documentação técnica HTML.
 
 Não iniciado de forma pronta:
 
-- [ ] UI de criação manual de snapshot.
-- [ ] Timeline avançada.
 - [ ] Comparação na GUI.
 - [ ] Restore parcial.
 - [ ] Rollback reversível de root.
@@ -246,16 +247,22 @@ Objetivo: listas grandes ficam navegáveis.
 
 Tarefas:
 
-- [x] Agrupar timeline por dia/mês.
+- [x] Agrupar timeline: Today, Yesterday, dia da semana, mês, "Mês Ano".
 - [x] Filtrar por managed/external (filter chips All/Managed/External).
-- [x] Buscar por path e tag.
-- [x] Ordenar managed por created_at desc.
+- [x] Buscar por path, tag e data (label, ISO YYYY-MM-DD, mês, hora).
+- [x] Ordenar managed por created_at desc, externos idem.
 - [x] Empty states objetivos (busca vazia, filtro vazio, sem snapshots).
+- [~] Filtro de período rápido: Today / 7 days (padrão) / 30 days / All.
+- [~] Toggle de visão: By day / By hour (agrupa por slot de hora).
+- [~] Títulos legíveis nos rows: nome da fonte extraído + hora (ex: home  12:00).
+- [~] Subtítulo mostra path completo, estado Writable se desbloqueado e tags.
+- [~] Grupos de data aplicados a snapshots externos também.
 
 Aceite:
 
 - [x] Filtros não reexecutam comandos Btrfs.
 - [x] Lista grande continua legível.
+- [~] Período padrão mostra apenas os últimos 7 dias; All mostra tudo.
 - [~] Testes e quality gates passam.
 
 ## Fase 6: Retenção E Agendamento
@@ -276,7 +283,7 @@ Aceite:
 
 - [x] Timer cria snapshot sem GUI aberta.
 - [~] Retenção remove apenas snapshots gerenciados elegíveis.
-- [ ] Logs aparecem na UI.
+- [~] Logs aparecem no dialog de política na UI.
 - [ ] Testes e quality gates passam.
 
 ## Fase 7: Unlock/Lock Avançado
@@ -285,18 +292,18 @@ Objetivo: permitir edição de snapshots de forma explícita e auditável.
 
 Tarefas:
 
-- [~] Ação para `ro=false`.
-- [~] Ação para `ro=true`.
-- [ ] Confirmação forte explicando riscos de snapshot gravável.
-- [ ] Marcar snapshot como dirty/unlocked no estado.
-- [ ] Bloquear snapshots externos por padrão.
+- [~] Ação para `ro=false` com AlertDialog explicando riscos.
+- [~] Ação para `ro=true` via botão de lock.
+- [~] Row mostra estado visual dirty/unlocked (CSS class `warning`).
+- [~] Bloquear snapshots externos por padrão (unlock button ausente; `if snapshot.managed` na GUI).
+- [~] Persistir estado no SQLite: helper grava `unlocked`/`readonly` em `managed_snapshots.state`; inventário lê de volta → `unlocked` persiste entre sessões.
 
 Aceite:
 
-- [ ] Snapshot gerenciado pode ser desbloqueado e bloqueado novamente.
-- [ ] UI marca estado dirty/unlocked.
-- [ ] Externos continuam protegidos.
-- [ ] Testes e quality gates passam.
+- [~] Snapshot gerenciado pode ser desbloqueado e bloqueado novamente.
+- [~] UI marca estado unlocked visualmente no row.
+- [~] Externos continuam protegidos (unlock button ausente — guarda no helper + GUI).
+- [~] Testes e quality gates passam (2 testes adicionados: persistência SQLite + rejeição de externos).
 
 ## Fase 8: Comparação E Restore Parcial
 
@@ -323,19 +330,20 @@ Objetivo: rollback de root seguro, conservador e testado em VM.
 
 Tarefas:
 
-- [ ] Staging de rollback a partir de snapshot selecionado.
-- [~] Modelo para snapshot de retorno do estado atual.
-- [ ] Persistir transação SQLite.
-- [ ] Integração grub-btrfs quando disponível.
+- [~] Staging de rollback: botão por snapshot → AlertDialog → `StageRollback` (cria anchor + staged copy + set-default).
+- [~] Modelo para snapshot de retorno do estado atual (RollbackAnchor inserido em managed_snapshots).
+- [~] Persistir transação SQLite (`rollback_plans` table com `original_default_subvolid` e `staged_subvolid`).
+- [~] Integração grub-btrfs quando disponível (chama `grub-mkconfig` automaticamente).
 - [ ] Integração refind-btrfs quando disponível.
-- [ ] Instruções manuais para bootloaders não suportados.
-- [ ] Detectar pós-reboot e oferecer commit/revert.
+- [ ] Instruções manuais para bootloaders não suportados (Conservative mode → UI mostra o que fazer).
+- [~] Detectar pós-reboot e oferecer commit/revert (dialog no startup via `GetPendingRollback`).
+- [~] `CommitRollback` (marca Activated) e `RevertRollback` (restaura default + deleta staged) implementados.
 
 Aceite:
 
 - [ ] Funciona em VM limpa com layout documentado.
 - [ ] Estado atual é preservado como retorno.
-- [ ] App mostra pending/activated/reverted.
+- [~] App mostra pending/activated/reverted (dialog no startup para pending; commit/revert wired).
 - [ ] Testes e quality gates passam.
 
 ## Fase 10: Empacotamento E Release
@@ -407,14 +415,15 @@ bash scripts/dev-loopback-btrfs-test.sh
 
 ## Próximo Segmento Bloqueante
 
-O próximo trabalho é a **Fase 1: Boundary De Privilégio D-Bus/Polkit**.
+Fases 1–7 estão em protótipo. O próximo trabalho de produto é a
+**Fase 8: Comparação E Restore Parcial**.
 
-Não devemos avançar para criar snapshots pela UI, retenção nova ou rollback até
-essa fase estar realmente pronta em host instalado:
+Fase 7 está em `[~]` — código completo, pendente validação no host real com
+D-Bus/Polkit instalado. A Fase 8 pode começar em paralelo.
 
-1. GUI sem `pkexec`.
-2. GUI sem execução direta de helper local no modo instalado.
-3. Serviço D-Bus instalado e validado.
-4. Polkit com prompts previsíveis.
-5. Teste impedindo regressão arquitetural.
-6. Documentação de instalação/debug.
+Antes de marcar Fase 7 como `[x]`:
+
+1. Validar fluxo unlock/lock no host real (GUI instalada via D-Bus/Polkit).
+2. Confirmar que CSS `warning` reaparece ao reabrir a GUI (lido do SQLite via inventário).
+
+Fase 8 não depende da validação de host da Fase 7 para começar.

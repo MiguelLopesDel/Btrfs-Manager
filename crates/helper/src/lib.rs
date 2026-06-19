@@ -5,9 +5,9 @@ use btrfs_manager_core::models::{
 use btrfs_manager_core::parser::{ParseError, parse_btrfs_subvolume_list, parse_findmnt_pairs};
 use btrfs_manager_core::paths::{PathSafetyError, validate_absolute_no_traversal};
 use btrfs_manager_core::retention::{RetentionPolicy, retention_keep_set};
+use btrfs_manager_core::rollback::{RollbackPlan, RollbackPrompt, RollbackStatus};
 use btrfs_manager_core::{PolicyRunLog, PolicyRunStatus, RetentionPreview};
-use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod dbus;
+mod state;
+use state::StateStore;
 
 #[derive(Debug, Error)]
 pub enum HelperError {
@@ -116,10 +118,23 @@ pub enum HelperRequest {
     PreviewRetentionForPolicy {
         policy: SnapshotPolicy,
     },
+    /// Stage a rollback using the Timeshift method (no fstab or GRUB changes needed):
+    /// snapshot current root as anchor, delete it from the namespace, snapshot target into
+    /// the freed slot. Kernel keeps running on the old data; next boot uses the new subvol.
     StageRollback {
-        snapshot: PathBuf,
-        prepared_subvolume: PathBuf,
-        return_snapshot: PathBuf,
+        mountpoint: PathBuf,
+        snapshot_path: PathBuf,
+        return_snapshot_path: PathBuf,
+    },
+    /// Return any rollback plan currently awaiting reboot, or None.
+    GetPendingRollback,
+    /// Accept the rollback after successful reboot (mark Activated).
+    CommitRollback {
+        plan_id: Uuid,
+    },
+    /// Cancel rollback before reboot, or revert after: restore original default subvolume.
+    RevertRollback {
+        plan_id: Uuid,
     },
     RunRetentionPolicy {
         policy_id: Uuid,
@@ -217,10 +232,16 @@ impl<R: CommandRunner> Helper<R> {
     /// mountpoint's filesystem. Mounts it at /run/btrfs-manager/toplevel/<uuid>/
     /// if not already mounted; subsequent calls are idempotent.
     fn ensure_top_level_mount(&self, mountpoint: &Path) -> Result<PathBuf, HelperError> {
-        let uuid_output = self.runner.run("findmnt", &[
-            "-n".into(), "-o".into(), "UUID".into(),
-            "--target".into(), mountpoint.display().to_string(),
-        ])?;
+        let uuid_output = self.runner.run(
+            "findmnt",
+            &[
+                "-n".into(),
+                "-o".into(),
+                "UUID".into(),
+                "--target".into(),
+                mountpoint.display().to_string(),
+            ],
+        )?;
         let fs_uuid = uuid_output.trim().to_string();
         if fs_uuid.is_empty() {
             return Err(HelperError::InvalidPolicy(format!(
@@ -235,76 +256,97 @@ impl<R: CommandRunner> Helper<R> {
         // Idempotent: skip mount if already mounted at this path.
         let already = self
             .runner
-            .run("findmnt", &["-n".into(), "--mountpoint".into(), top.display().to_string()])
+            .run(
+                "findmnt",
+                &[
+                    "-n".into(),
+                    "--mountpoint".into(),
+                    top.display().to_string(),
+                ],
+            )
             .ok()
             .map(|o| !o.trim().is_empty())
             .unwrap_or(false);
         if !already {
-            let device_output = self.runner.run("findmnt", &[
-                "-n".into(), "-o".into(), "SOURCE".into(),
-                "--target".into(), mountpoint.display().to_string(),
-            ])?;
+            let device_output = self.runner.run(
+                "findmnt",
+                &[
+                    "-n".into(),
+                    "-o".into(),
+                    "SOURCE".into(),
+                    "--target".into(),
+                    mountpoint.display().to_string(),
+                ],
+            )?;
             let device = normalize_findmnt_source(device_output.trim());
             std::fs::create_dir_all(&top)?;
-            self.runner.run("mount", &[
-                "-o".into(), "subvolid=5".into(),
-                device, top.display().to_string(),
-            ])?;
+            self.runner.run(
+                "mount",
+                &[
+                    "-o".into(),
+                    "subvolid=5".into(),
+                    device,
+                    top.display().to_string(),
+                ],
+            )?;
             tracing::info!(path = %top.display(), "mounted btrfs top-level");
         }
         Ok(top)
     }
 
+    fn state_store_for_mountpoint(&self, mountpoint: &Path) -> Result<StateStore, HelperError> {
+        let top = self.ensure_top_level_mount(mountpoint)?;
+        self.ensure_manager_subvolume_at_top_level(&top)?;
+        Self::state_store_at_top_level(&top)
+    }
+
+    fn default_state_store(&self) -> Result<StateStore, HelperError> {
+        self.state_store_for_mountpoint(Path::new("/"))
+    }
+
+    fn state_store_at_top_level(top_level: &Path) -> Result<StateStore, HelperError> {
+        StateStore::open_at(
+            top_level
+                .join("@btrfs-manager")
+                .join("state")
+                .join("state.db"),
+        )
+    }
+
+    fn ensure_manager_subvolume_at_top_level(&self, top_level: &Path) -> Result<(), HelperError> {
+        let manager = top_level.join("@btrfs-manager");
+        if !manager.exists() {
+            self.runner.run(
+                "btrfs",
+                &[
+                    "subvolume".into(),
+                    "create".into(),
+                    manager.display().to_string(),
+                ],
+            )?;
+            return Ok(());
+        }
+
+        match self.runner.run(
+            "btrfs",
+            &[
+                "subvolume".into(),
+                "show".into(),
+                manager.display().to_string(),
+            ],
+        ) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(HelperError::InvalidPolicy(format!(
+                "{} exists but is not a Btrfs subvolume",
+                manager.display()
+            ))),
+        }
+    }
+
     pub fn handle(&self, request: HelperRequest) -> Result<HelperResponse, HelperError> {
         match request {
             HelperRequest::DiscoverFilesystems => self.discover_filesystems(),
-            HelperRequest::ListSubvolumes { mountpoint } => {
-                validate_path(&mountpoint)?;
-                // List from the top-level (subvolid=5) so paths are canonical:
-                // nested subvolumes like var/lib/portables appear as @/var/lib/portables.
-                let top = self.ensure_top_level_mount(&mountpoint)?;
-                let args = vec![
-                    "subvolume".into(),
-                    "list".into(),
-                    "-u".into(),
-                    top.display().to_string(),
-                ];
-                let output = self.runner.run("btrfs", &args)?;
-                let mut subvolumes = parse_btrfs_subvolume_list(&output)?;
-                classify_subvolumes(&mut subvolumes);
-                // Enrich managed subvolumes with SQLite metadata (tags, created_at).
-                if let Ok(store) = StateStore::open() {
-                    if let Ok(snapshots) = store.list_all_managed_snapshots() {
-                        for subvolume in &mut subvolumes {
-                            if let Some(snap) = snapshots.iter().find(|s| s.path == subvolume.path) {
-                                subvolume.managed = true;
-                                subvolume.tags = snap.tags.clone();
-                                subvolume.created_at = Some(snap.created_at);
-                                subvolume.readonly = snap.is_managed();
-                                subvolume.unlocked = !matches!(
-                                    snap.state,
-                                    SnapshotState::ReadOnly | SnapshotState::RollbackAnchor
-                                );
-                            }
-                        }
-                    }
-                }
-                let snapshots = snapshots_from_subvolumes(&subvolumes);
-                let inventory = SubvolumeInventory {
-                    mountpoint,
-                    subvolumes,
-                    snapshots,
-                };
-                Ok(HelperResponse {
-                    ok: true,
-                    message: format!(
-                        "found {} subvolumes and {} snapshot candidates",
-                        inventory.subvolumes.len(),
-                        inventory.snapshots.len()
-                    ),
-                    data: Some(serde_json::to_value(inventory)?),
-                })
-            }
+            HelperRequest::ListSubvolumes { mountpoint } => self.list_subvolumes(mountpoint),
             HelperRequest::CreateSnapshot {
                 source,
                 destination,
@@ -382,34 +424,11 @@ impl<R: CommandRunner> Helper<R> {
                     data: None,
                 })
             }
-            HelperRequest::MountSubvolume { mountpoint, subvol_path, target } => {
-                validate_path(&mountpoint)?;
-                validate_path(&target)?;
-                let device_output = self.runner.run("findmnt", &[
-                    "-n".into(), "-o".into(), "SOURCE".into(),
-                    "--target".into(), mountpoint.display().to_string(),
-                ])?;
-                let device = normalize_findmnt_source(device_output.trim());
-                std::fs::create_dir_all(&target)?;
-                // Do not force ro — btrfs enforces the subvolume's own ro property.
-                // A snapshot with ro=true is always read-only regardless of mount flags.
-                // An unlocked snapshot (ro=false) is mounted writable automatically.
-                let subvol_opt = format!("subvol={}", subvol_path.display());
-                self.runner.run("mount", &[
-                    "-t".into(), "btrfs".into(), "-o".into(), subvol_opt,
-                    device, target.display().to_string(),
-                ])?;
-                tracing::info!(
-                    subvol = %subvol_path.display(),
-                    target = %target.display(),
-                    "subvolume mounted (writability determined by subvolume ro property)"
-                );
-                Ok(HelperResponse {
-                    ok: true,
-                    message: "subvolume mounted".into(),
-                    data: None,
-                })
-            }
+            HelperRequest::MountSubvolume {
+                mountpoint,
+                subvol_path,
+                target,
+            } => self.mount_subvolume_impl(mountpoint, subvol_path, target),
             HelperRequest::MountTopLevel { mountpoint } => {
                 validate_path(&mountpoint)?;
                 let top = self.ensure_top_level_mount(&mountpoint)?;
@@ -443,94 +462,37 @@ impl<R: CommandRunner> Helper<R> {
                 subvolume_path,
                 snapshot_root,
                 tags,
-            } => {
-                validate_path(&mountpoint)?;
-                let top = self.ensure_top_level_mount(&mountpoint)?;
-
-                let source = top.join(&subvolume_path);
-                let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S");
-                let source_label = subvolume_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|s| s.trim_start_matches('@'))
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("root");
-                let dest_name = format!("managed-{source_label}-{timestamp}");
-                let dest_parent = top.join(&snapshot_root);
-                if !dest_parent.exists() {
-                    self.runner.run("btrfs", &[
-                        "subvolume".into(), "create".into(), dest_parent.display().to_string(),
-                    ])?;
-                }
-                let dest = dest_parent.join(&dest_name);
-                self.runner.run("btrfs", &[
-                    "subvolume".into(), "snapshot".into(), "-r".into(),
-                    source.display().to_string(), dest.display().to_string(),
-                ])?;
-
-                let rel_path = snapshot_root.join(dest_name);
-                let snapshot = Snapshot {
-                    id: Uuid::new_v4(),
-                    source_subvolume: SubvolumeId(0),
-                    path: rel_path,
-                    created_at: Utc::now(),
-                    tags,
-                    origin: SnapshotOrigin::Managed,
-                    state: SnapshotState::ReadOnly,
-                };
-                StateStore::open()?.insert_managed_snapshot(None, &snapshot)?;
-                tracing::info!(path = %snapshot.path.display(), "managed snapshot created");
-                Ok(HelperResponse {
-                    ok: true,
-                    message: format!("snapshot created at {}", snapshot.path.display()),
-                    data: Some(serde_json::to_value(&snapshot)?),
-                })
-            }
+            } => self.create_managed_snapshot_impl(mountpoint, subvolume_path, snapshot_root, tags),
             HelperRequest::ListManagedSnapshots => {
-                let snapshots = StateStore::open()?.list_all_managed_snapshots()?;
+                let snapshots = self.default_state_store()?.list_all_managed_snapshots()?;
                 Ok(HelperResponse {
                     ok: true,
                     message: format!("found {} managed snapshot(s)", snapshots.len()),
                     data: Some(serde_json::to_value(&snapshots)?),
                 })
             }
-            HelperRequest::SetManagedSnapshotReadOnly { mountpoint, subvol_path, readonly } => {
+            HelperRequest::SetManagedSnapshotReadOnly {
+                mountpoint,
+                subvol_path,
+                readonly,
+            } => self.set_managed_snapshot_ro(mountpoint, subvol_path, readonly),
+            HelperRequest::DeleteManagedSnapshot {
+                mountpoint,
+                subvolume_path,
+            } => {
                 validate_path(&mountpoint)?;
-                let store = StateStore::open()?;
-                let id = store.find_managed_snapshot_id_by_path(&subvol_path)?;
-                let top = self.ensure_top_level_mount(&mountpoint)?;
-                let abs_path = top.join(&subvol_path);
-                let value = if readonly { "true" } else { "false" };
-                self.runner.run("btrfs", &[
-                    "property".into(), "set".into(), abs_path.display().to_string(),
-                    "ro".into(), value.into(),
-                ])?;
-                let new_state = if readonly {
-                    SnapshotState::ReadOnly
-                } else {
-                    SnapshotState::Unlocked
-                };
-                store.update_snapshot_state(id, &new_state)?;
-                tracing::info!(
-                    path = %subvol_path.display(),
-                    readonly,
-                    "managed snapshot ro flag updated"
-                );
-                Ok(HelperResponse {
-                    ok: true,
-                    message: format!("snapshot ro set to {value}"),
-                    data: None,
-                })
-            }
-            HelperRequest::DeleteManagedSnapshot { mountpoint, subvolume_path } => {
-                validate_path(&mountpoint)?;
-                let store = StateStore::open()?;
+                let store = self.state_store_for_mountpoint(&mountpoint)?;
                 let id = store.find_managed_snapshot_id_by_path(&subvolume_path)?;
                 let top = self.ensure_top_level_mount(&mountpoint)?;
                 let abs_path = top.join(&subvolume_path);
-                self.runner.run("btrfs", &[
-                    "subvolume".into(), "delete".into(), abs_path.display().to_string(),
-                ])?;
+                self.runner.run(
+                    "btrfs",
+                    &[
+                        "subvolume".into(),
+                        "delete".into(),
+                        abs_path.display().to_string(),
+                    ],
+                )?;
                 store.delete_managed_snapshot(id)?;
                 tracing::info!(path = %subvolume_path.display(), "managed snapshot deleted");
                 Ok(HelperResponse {
@@ -540,7 +502,7 @@ impl<R: CommandRunner> Helper<R> {
                 })
             }
             HelperRequest::ListSnapshotPolicies => {
-                let policies = StateStore::open()?.list_policies()?;
+                let policies = self.default_state_store()?.list_policies()?;
                 Ok(HelperResponse {
                     ok: true,
                     message: format!("found {} snapshot policies", policies.len()),
@@ -549,7 +511,7 @@ impl<R: CommandRunner> Helper<R> {
             }
             HelperRequest::UpsertSnapshotPolicy { policy } => {
                 validate_policy(&policy)?;
-                let store = StateStore::open()?;
+                let store = self.state_store_for_mountpoint(&policy.mountpoint)?;
                 store.upsert_policy(&policy)?;
                 self.write_systemd_policy_units(&policy)?;
                 Ok(HelperResponse {
@@ -559,7 +521,7 @@ impl<R: CommandRunner> Helper<R> {
                 })
             }
             HelperRequest::SetSnapshotPolicyEnabled { policy_id, enabled } => {
-                let store = StateStore::open()?;
+                let store = self.default_state_store()?;
                 let mut policy = store.get_policy(policy_id)?.ok_or_else(|| {
                     HelperError::InvalidPolicy(format!("unknown policy {policy_id}"))
                 })?;
@@ -586,7 +548,9 @@ impl<R: CommandRunner> Helper<R> {
             }
             HelperRequest::PreviewRetentionForPolicy { policy } => {
                 validate_policy(&policy)?;
-                let snapshots = StateStore::open()?.list_managed_snapshots_for_policy(policy.id)?;
+                let snapshots = self
+                    .state_store_for_mountpoint(&policy.mountpoint)?
+                    .list_managed_snapshots_for_policy(policy.id)?;
                 let preview = retention_preview_for_policy(&policy, &snapshots);
                 Ok(HelperResponse {
                     ok: true,
@@ -594,9 +558,14 @@ impl<R: CommandRunner> Helper<R> {
                     data: Some(serde_json::to_value(preview)?),
                 })
             }
-            HelperRequest::StageRollback { .. } => {
-                Err(HelperError::NotImplemented("stage rollback"))
-            }
+            HelperRequest::StageRollback {
+                mountpoint,
+                snapshot_path,
+                return_snapshot_path,
+            } => self.stage_rollback(mountpoint, snapshot_path, return_snapshot_path),
+            HelperRequest::GetPendingRollback => self.get_pending_rollback_response(),
+            HelperRequest::CommitRollback { plan_id } => self.commit_rollback(plan_id),
+            HelperRequest::RevertRollback { plan_id } => self.revert_rollback(plan_id),
             HelperRequest::RunRetentionPolicy { policy_id } => {
                 let log = self.run_retention_policy(policy_id)?;
                 Ok(HelperResponse {
@@ -612,37 +581,419 @@ impl<R: CommandRunner> Helper<R> {
                 })
             }
             HelperRequest::ListPolicyRunLogs { policy_id } => {
-                let logs = StateStore::open()?.list_policy_logs(policy_id)?;
+                let logs = self.default_state_store()?.list_policy_logs(policy_id)?;
                 Ok(HelperResponse {
                     ok: true,
                     message: format!("found {} policy run log(s)", logs.len()),
                     data: Some(serde_json::to_value(logs)?),
                 })
             }
-            HelperRequest::OpenFileManager { path, display, wayland_display, xdg_runtime_dir } => {
-                validate_absolute_no_traversal(&path)?;
-                // Find a supported file manager.
-                let fm = ["/usr/bin/dolphin", "/usr/bin/nautilus", "/usr/bin/thunar", "/usr/bin/nemo"]
-                    .iter()
-                    .find(|p| std::path::Path::new(p).exists())
-                    .ok_or_else(|| std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "no supported file manager found (tried dolphin, nautilus, thunar, nemo)",
-                    ))?;
-                tracing::info!(path = %path.display(), fm, "opening file manager as root");
-                std::process::Command::new(fm)
-                    .arg(&path)
-                    .env("DISPLAY", &display)
-                    .env("WAYLAND_DISPLAY", &wayland_display)
-                    .env("XDG_RUNTIME_DIR", &xdg_runtime_dir)
-                    .spawn()?;
+            HelperRequest::OpenFileManager {
+                path,
+                display,
+                wayland_display,
+                xdg_runtime_dir,
+            } => self.open_file_manager(path, display, wayland_display, xdg_runtime_dir),
+        }
+    }
+
+    fn list_subvolumes(&self, mountpoint: PathBuf) -> Result<HelperResponse, HelperError> {
+        validate_path(&mountpoint)?;
+        let top = self.ensure_top_level_mount(&mountpoint)?;
+        let output = self.runner.run(
+            "btrfs",
+            &[
+                "subvolume".into(),
+                "list".into(),
+                "-u".into(),
+                top.display().to_string(),
+            ],
+        )?;
+        let mut subvolumes = parse_btrfs_subvolume_list(&output)?;
+        classify_subvolumes(&mut subvolumes);
+        if let Ok(store) = Self::state_store_at_top_level(&top) {
+            if let Ok(snapshots) = store.list_all_managed_snapshots() {
+                for subvolume in &mut subvolumes {
+                    if let Some(snap) = snapshots.iter().find(|s| s.path == subvolume.path) {
+                        subvolume.managed = true;
+                        subvolume.tags = snap.tags.clone();
+                        subvolume.created_at = Some(snap.created_at);
+                        subvolume.readonly = snap.is_managed();
+                        subvolume.unlocked = !matches!(
+                            snap.state,
+                            SnapshotState::ReadOnly | SnapshotState::RollbackAnchor
+                        );
+                    }
+                }
+            }
+        }
+        let snapshots = snapshots_from_subvolumes(&subvolumes);
+        let inventory = SubvolumeInventory {
+            mountpoint,
+            subvolumes,
+            snapshots,
+        };
+        Ok(HelperResponse {
+            ok: true,
+            message: format!(
+                "found {} subvolumes and {} snapshot candidates",
+                inventory.subvolumes.len(),
+                inventory.snapshots.len()
+            ),
+            data: Some(serde_json::to_value(inventory)?),
+        })
+    }
+
+    fn mount_subvolume_impl(
+        &self,
+        mountpoint: PathBuf,
+        subvol_path: PathBuf,
+        target: PathBuf,
+    ) -> Result<HelperResponse, HelperError> {
+        validate_path(&mountpoint)?;
+        validate_path(&target)?;
+        let device_output = self.runner.run(
+            "findmnt",
+            &[
+                "-n".into(),
+                "-o".into(),
+                "SOURCE".into(),
+                "--target".into(),
+                mountpoint.display().to_string(),
+            ],
+        )?;
+        let device = normalize_findmnt_source(device_output.trim());
+        std::fs::create_dir_all(&target)?;
+        let subvol_opt = format!("subvol={}", subvol_path.display());
+        self.runner.run(
+            "mount",
+            &[
+                "-t".into(),
+                "btrfs".into(),
+                "-o".into(),
+                subvol_opt,
+                device,
+                target.display().to_string(),
+            ],
+        )?;
+        tracing::info!(
+            subvol = %subvol_path.display(),
+            target = %target.display(),
+            "subvolume mounted"
+        );
+        Ok(HelperResponse {
+            ok: true,
+            message: "subvolume mounted".into(),
+            data: None,
+        })
+    }
+
+    fn create_managed_snapshot_impl(
+        &self,
+        mountpoint: PathBuf,
+        subvolume_path: PathBuf,
+        snapshot_root: PathBuf,
+        tags: Vec<String>,
+    ) -> Result<HelperResponse, HelperError> {
+        validate_path(&mountpoint)?;
+        let top = self.ensure_top_level_mount(&mountpoint)?;
+        self.ensure_manager_subvolume_at_top_level(&top)?;
+        let source = top.join(&subvolume_path);
+        let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S");
+        let source_label = subvolume_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.trim_start_matches('@'))
+            .filter(|s| !s.is_empty())
+            .unwrap_or("root");
+        let dest_name = format!("managed-{source_label}-{timestamp}");
+        let dest_parent = top.join(&snapshot_root);
+        if !dest_parent.exists() {
+            self.runner.run(
+                "btrfs",
+                &[
+                    "subvolume".into(),
+                    "create".into(),
+                    dest_parent.display().to_string(),
+                ],
+            )?;
+        }
+        let dest = dest_parent.join(&dest_name);
+        self.runner.run(
+            "btrfs",
+            &[
+                "subvolume".into(),
+                "snapshot".into(),
+                "-r".into(),
+                source.display().to_string(),
+                dest.display().to_string(),
+            ],
+        )?;
+        let rel_path = snapshot_root.join(dest_name);
+        let snapshot = Snapshot {
+            id: Uuid::new_v4(),
+            source_subvolume: SubvolumeId(0),
+            path: rel_path,
+            created_at: Utc::now(),
+            tags,
+            origin: SnapshotOrigin::Managed,
+            state: SnapshotState::ReadOnly,
+        };
+        Self::state_store_at_top_level(&top)?.insert_managed_snapshot(None, &snapshot)?;
+        tracing::info!(path = %snapshot.path.display(), "managed snapshot created");
+        Ok(HelperResponse {
+            ok: true,
+            message: format!("snapshot created at {}", snapshot.path.display()),
+            data: Some(serde_json::to_value(&snapshot)?),
+        })
+    }
+
+    fn set_managed_snapshot_ro(
+        &self,
+        mountpoint: PathBuf,
+        subvol_path: PathBuf,
+        readonly: bool,
+    ) -> Result<HelperResponse, HelperError> {
+        validate_path(&mountpoint)?;
+        let store = self.state_store_for_mountpoint(&mountpoint)?;
+        let id = store.find_managed_snapshot_id_by_path(&subvol_path)?;
+        let top = self.ensure_top_level_mount(&mountpoint)?;
+        let abs_path = top.join(&subvol_path);
+        let value = if readonly { "true" } else { "false" };
+        self.runner.run(
+            "btrfs",
+            &[
+                "property".into(),
+                "set".into(),
+                abs_path.display().to_string(),
+                "ro".into(),
+                value.into(),
+            ],
+        )?;
+        let new_state = if readonly {
+            SnapshotState::ReadOnly
+        } else {
+            SnapshotState::Unlocked
+        };
+        store.update_snapshot_state(id, &new_state)?;
+        tracing::info!(path = %subvol_path.display(), readonly, "managed snapshot ro flag updated");
+        Ok(HelperResponse {
+            ok: true,
+            message: format!("snapshot ro set to {value}"),
+            data: None,
+        })
+    }
+
+    fn stage_rollback(
+        &self,
+        mountpoint: PathBuf,
+        snapshot_path: PathBuf,
+        return_snapshot_path: PathBuf,
+    ) -> Result<HelperResponse, HelperError> {
+        validate_path(&mountpoint)?;
+        validate_relative_btrfs_path(&snapshot_path, "rollback snapshot path")?;
+        validate_relative_btrfs_path(&return_snapshot_path, "rollback return snapshot path")?;
+        let boot_integration = detect_boot_integration();
+        let top = self.ensure_top_level_mount(&mountpoint)?;
+        self.ensure_manager_subvolume_at_top_level(&top)?;
+        let current_subvol = self
+            .current_mounted_subvolume(&mountpoint)?
+            .ok_or_else(|| {
+                HelperError::InvalidPolicy("could not determine active root subvolume".into())
+            })?;
+        let current_root_abs = top.join(&current_subvol);
+        let source_abs = top.join(&snapshot_path);
+        let return_abs = top.join(&return_snapshot_path);
+
+        if let Some(parent) = return_abs.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // mv @ → return anchor (rename in top-level tree; kernel VFS unaffected)
+        std::fs::rename(&current_root_abs, &return_abs)?;
+
+        // snapshot target → @ (fills freed slot; mv back on failure)
+        let snap_result = self.runner.run(
+            "btrfs",
+            &[
+                "subvolume".into(),
+                "snapshot".into(),
+                source_abs.display().to_string(),
+                current_root_abs.display().to_string(),
+            ],
+        );
+        if let Err(e) = snap_result {
+            tracing::error!(error = %e, "snapshot failed, recovering @ via mv");
+            let _ = std::fs::rename(&return_abs, &current_root_abs);
+            return Err(HelperError::InvalidPolicy(format!(
+                "rollback failed (@ recovered): {e}"
+            )));
+        }
+
+        let store = Self::state_store_at_top_level(&top)?;
+        store.insert_managed_snapshot(
+            None,
+            &Snapshot {
+                id: Uuid::new_v4(),
+                source_subvolume: SubvolumeId(0),
+                path: return_snapshot_path.clone(),
+                created_at: Utc::now(),
+                tags: vec![
+                    "rollback-anchor".into(),
+                    format!("before-restoring:{}", snapshot_path.display()),
+                ],
+                origin: SnapshotOrigin::Managed,
+                state: SnapshotState::RollbackAnchor,
+            },
+        )?;
+        let mut plan = RollbackPlan::new(
+            mountpoint,
+            snapshot_path.clone(),
+            current_subvol.clone(),
+            return_snapshot_path,
+            boot_integration,
+        );
+        plan.created_boot_id = current_boot_id();
+        plan.description = Some(format!("Before restoring {}", snapshot_path.display()));
+        store.insert_rollback_plan(&plan)?;
+        write_rollback_plan_file(&top, &plan)?;
+        tracing::info!(replaced = %current_subvol.display(), "rollback staged — reboot to activate");
+        Ok(HelperResponse {
+            ok: true,
+            message: format!(
+                "rollback staged: {} replaced — reboot to activate",
+                current_subvol.display()
+            ),
+            data: Some(serde_json::to_value(&plan)?),
+        })
+    }
+
+    fn get_pending_rollback_response(&self) -> Result<HelperResponse, HelperError> {
+        match self.pending_rollback()? {
+            None => Ok(HelperResponse {
+                ok: true,
+                message: "no pending rollback".into(),
+                data: None,
+            }),
+            Some(plan) => {
+                let rebooted_since_staging = match (&plan.created_boot_id, current_boot_id()) {
+                    (Some(staged_boot), Some(current_boot)) => staged_boot != &current_boot,
+                    _ => false,
+                };
+                let prompt = RollbackPrompt {
+                    plan,
+                    rebooted_since_staging,
+                };
                 Ok(HelperResponse {
                     ok: true,
-                    message: format!("file manager opened at {}", path.display()),
-                    data: None,
+                    message: "pending rollback found".into(),
+                    data: Some(serde_json::to_value(&prompt)?),
                 })
             }
         }
+    }
+
+    fn commit_rollback(&self, plan_id: Uuid) -> Result<HelperResponse, HelperError> {
+        let plan = self
+            .pending_rollback()?
+            .filter(|plan| plan.id == plan_id)
+            .ok_or_else(|| {
+                HelperError::InvalidPolicy(format!("no awaiting_reboot plan with id {plan_id}"))
+            })?;
+        let top = self.ensure_top_level_mount(&plan.mountpoint)?;
+        self.ensure_manager_subvolume_at_top_level(&top)?;
+        Self::state_store_at_top_level(&top)?.update_rollback_plan_status(plan_id, "activated")?;
+        update_rollback_plan_file_status(&top, plan_id, RollbackStatus::Activated)?;
+        tracing::info!(plan_id = %plan_id, "rollback committed");
+        Ok(HelperResponse {
+            ok: true,
+            message: "rollback committed".into(),
+            data: None,
+        })
+    }
+
+    fn revert_rollback(&self, plan_id: Uuid) -> Result<HelperResponse, HelperError> {
+        let plan = self
+            .pending_rollback()?
+            .filter(|p| p.id == plan_id)
+            .ok_or_else(|| {
+                HelperError::InvalidPolicy(format!("no awaiting_reboot plan with id {plan_id}"))
+            })?;
+        validate_relative_btrfs_path(&plan.replaced_subvol_path, "rollback replaced subvolume")?;
+        validate_relative_btrfs_path(&plan.return_snapshot_path, "rollback return snapshot path")?;
+        let top = self.ensure_top_level_mount(&plan.mountpoint)?;
+        self.ensure_manager_subvolume_at_top_level(&top)?;
+        let replaced_abs = top.join(&plan.replaced_subvol_path);
+        let return_abs = top.join(&plan.return_snapshot_path);
+        let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
+        let discard_abs = top.join(format!("@btrfs-manager/discarded-{timestamp}"));
+        if let Some(p) = discard_abs.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        std::fs::rename(&replaced_abs, &discard_abs)?;
+        std::fs::rename(&return_abs, &replaced_abs)?;
+        let store = Self::state_store_at_top_level(&top)?;
+        store.update_rollback_plan_status(plan_id, "reverted")?;
+        update_rollback_plan_file_status(&top, plan_id, RollbackStatus::Reverted)?;
+        tracing::info!(plan_id = %plan_id, "rollback reverted");
+        Ok(HelperResponse {
+            ok: true,
+            message: "rollback reverted — reboot to restore original root".into(),
+            data: None,
+        })
+    }
+
+    fn pending_rollback(&self) -> Result<Option<RollbackPlan>, HelperError> {
+        let top = match self.ensure_top_level_mount(Path::new("/")) {
+            Ok(top) => top,
+            Err(err) => {
+                tracing::debug!(error = %err, "no top-level rollback plan fallback available");
+                return Ok(None);
+            }
+        };
+        self.ensure_manager_subvolume_at_top_level(&top)?;
+        match read_rollback_plan_file_state(&top)? {
+            RollbackPlanFileState::Pending(plan) => Ok(Some(plan)),
+            RollbackPlanFileState::Resolved => Ok(None),
+            RollbackPlanFileState::Missing => {
+                Self::state_store_at_top_level(&top)?.get_pending_rollback()
+            }
+        }
+    }
+
+    fn open_file_manager(
+        &self,
+        path: PathBuf,
+        display: String,
+        wayland_display: String,
+        xdg_runtime_dir: String,
+    ) -> Result<HelperResponse, HelperError> {
+        validate_absolute_no_traversal(&path)?;
+        let fm = [
+            "/usr/bin/dolphin",
+            "/usr/bin/nautilus",
+            "/usr/bin/thunar",
+            "/usr/bin/nemo",
+        ]
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no supported file manager found (tried dolphin, nautilus, thunar, nemo)",
+            )
+        })?;
+        tracing::info!(path = %path.display(), fm, "opening file manager as root");
+        std::process::Command::new(fm)
+            .arg(&path)
+            .env("DISPLAY", &display)
+            .env("WAYLAND_DISPLAY", &wayland_display)
+            .env("XDG_RUNTIME_DIR", &xdg_runtime_dir)
+            .spawn()?;
+        Ok(HelperResponse {
+            ok: true,
+            message: format!("file manager opened at {}", path.display()),
+            data: None,
+        })
     }
 
     fn cleanup_managed_mounts(&self) -> Result<usize, HelperError> {
@@ -745,6 +1096,20 @@ impl<R: CommandRunner> Helper<R> {
         })
     }
 
+    fn current_mounted_subvolume(&self, mountpoint: &Path) -> Result<Option<PathBuf>, HelperError> {
+        let options_output = self.runner.run(
+            "findmnt",
+            &[
+                "-n".into(),
+                "-o".into(),
+                "OPTIONS".into(),
+                "--target".into(),
+                mountpoint.display().to_string(),
+            ],
+        )?;
+        Ok(mounted_subvolume_from_options(options_output.trim()))
+    }
+
     fn default_subvolume_for_mount(
         &self,
         mountpoint: &Path,
@@ -762,10 +1127,11 @@ impl<R: CommandRunner> Helper<R> {
     }
 
     fn retention_preview(&self, policy_id: Uuid) -> Result<RetentionPreview, HelperError> {
-        let store = StateStore::open()?;
-        let policy = store
+        let default_store = self.default_state_store()?;
+        let policy = default_store
             .get_policy(policy_id)?
             .ok_or_else(|| HelperError::InvalidPolicy(format!("unknown policy {policy_id}")))?;
+        let store = self.state_store_for_mountpoint(&policy.mountpoint)?;
         let snapshots = store.list_managed_snapshots_for_policy(policy_id)?;
         Ok(retention_preview_for_policy(&policy, &snapshots))
     }
@@ -797,7 +1163,7 @@ impl<R: CommandRunner> Helper<R> {
                 error: Some(err.to_string()),
             },
         };
-        StateStore::open()?.insert_policy_log(&log)?;
+        self.default_state_store()?.insert_policy_run_log(&log)?;
         Ok(log)
     }
 
@@ -805,8 +1171,8 @@ impl<R: CommandRunner> Helper<R> {
         &self,
         policy_id: Uuid,
     ) -> Result<(PathBuf, Vec<PathBuf>), HelperError> {
-        let store = StateStore::open()?;
-        let policy = store
+        let default_store = self.default_state_store()?;
+        let policy = default_store
             .get_policy(policy_id)?
             .ok_or_else(|| HelperError::InvalidPolicy(format!("unknown policy {policy_id}")))?;
         if !policy.enabled {
@@ -817,14 +1183,20 @@ impl<R: CommandRunner> Helper<R> {
         validate_policy(&policy)?;
 
         let top = self.ensure_top_level_mount(&policy.mountpoint)?;
+        let store = Self::state_store_at_top_level(&top)?;
 
         let result: Result<(PathBuf, Vec<PathBuf>), HelperError> = (|| {
             // Create snapshot container subvolume if needed.
             let container = top.join(&policy.snapshot_root);
             if !container.exists() {
-                self.runner.run("btrfs", &[
-                    "subvolume".into(), "create".into(), container.display().to_string(),
-                ])?;
+                self.runner.run(
+                    "btrfs",
+                    &[
+                        "subvolume".into(),
+                        "create".into(),
+                        container.display().to_string(),
+                    ],
+                )?;
             }
             let snap_dir_abs = top.join(policy_snapshot_dir(&policy));
             std::fs::create_dir_all(&snap_dir_abs)?;
@@ -837,10 +1209,16 @@ impl<R: CommandRunner> Helper<R> {
             let dest_abs = snap_dir_abs.join(&dest_name);
             let source_abs = top.join(&policy.source_path);
 
-            self.runner.run("btrfs", &[
-                "subvolume".into(), "snapshot".into(), "-r".into(),
-                source_abs.display().to_string(), dest_abs.display().to_string(),
-            ])?;
+            self.runner.run(
+                "btrfs",
+                &[
+                    "subvolume".into(),
+                    "snapshot".into(),
+                    "-r".into(),
+                    source_abs.display().to_string(),
+                    dest_abs.display().to_string(),
+                ],
+            )?;
 
             // Store relative path in SQLite.
             let rel_path = policy_snapshot_dir(&policy).join(&dest_name);
@@ -867,9 +1245,14 @@ impl<R: CommandRunner> Helper<R> {
                     continue;
                 }
                 let old_abs = top.join(&old.path);
-                self.runner.run("btrfs", &[
-                    "subvolume".into(), "delete".into(), old_abs.display().to_string(),
-                ])?;
+                self.runner.run(
+                    "btrfs",
+                    &[
+                        "subvolume".into(),
+                        "delete".into(),
+                        old_abs.display().to_string(),
+                    ],
+                )?;
                 store.delete_managed_snapshot(old.id)?;
                 deleted.push(old.path);
             }
@@ -925,386 +1308,6 @@ impl<R: CommandRunner> Helper<R> {
         let _ = service_name;
         Ok(())
     }
-}
-
-struct StateStore {
-    connection: Connection,
-}
-
-impl StateStore {
-    fn open() -> Result<Self, HelperError> {
-        let path = state_db_path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let connection = Connection::open(path)?;
-        let store = Self { connection };
-        store.migrate()?;
-        Ok(store)
-    }
-
-    fn migrate(&self) -> Result<(), HelperError> {
-        self.connection.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS managed_snapshots (
-                id TEXT PRIMARY KEY NOT NULL,
-                policy_id TEXT,
-                source_subvolume_id INTEGER NOT NULL,
-                path TEXT NOT NULL UNIQUE,
-                created_at TEXT NOT NULL,
-                tags_json TEXT NOT NULL DEFAULT '[]',
-                origin_tool TEXT,
-                state TEXT NOT NULL CHECK (state IN ('readonly', 'unlocked', 'dirty_unlocked', 'rollback_anchor'))
-            );
-            CREATE TABLE IF NOT EXISTS snapshot_policies (
-                id TEXT PRIMARY KEY NOT NULL,
-                filesystem_id TEXT,
-                subvolume_id INTEGER NOT NULL,
-                source_path TEXT NOT NULL,
-                mountpoint TEXT NOT NULL,
-                snapshot_root TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                schedule TEXT NOT NULL CHECK (schedule IN ('hourly', 'daily', 'weekly', 'monthly')),
-                keep_hourly INTEGER NOT NULL DEFAULT 24,
-                keep_daily INTEGER NOT NULL DEFAULT 7,
-                keep_weekly INTEGER NOT NULL DEFAULT 4,
-                keep_monthly INTEGER NOT NULL DEFAULT 6,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS policy_run_logs (
-                id TEXT PRIMARY KEY NOT NULL,
-                policy_id TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                finished_at TEXT NOT NULL,
-                status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
-                created_snapshot TEXT,
-                deleted_snapshots_json TEXT NOT NULL DEFAULT '[]',
-                error TEXT
-            );
-            "#,
-        )?;
-        add_column_if_missing(&self.connection, "managed_snapshots", "policy_id", "TEXT")?;
-        for (column, definition) in [
-            ("filesystem_id", "TEXT"),
-            ("source_path", "TEXT NOT NULL DEFAULT ''"),
-            ("mountpoint", "TEXT NOT NULL DEFAULT '/'"),
-            ("snapshot_root", "TEXT NOT NULL DEFAULT '.snapshots'"),
-            ("created_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"),
-            ("updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"),
-        ] {
-            add_column_if_missing(&self.connection, "snapshot_policies", column, definition)?;
-        }
-        Ok(())
-    }
-
-    fn list_policies(&self) -> Result<Vec<SnapshotPolicy>, HelperError> {
-        let mut statement = self.connection.prepare(
-            "SELECT id, filesystem_id, subvolume_id, source_path, mountpoint, snapshot_root, schedule, keep_hourly, keep_daily, keep_weekly, keep_monthly, enabled FROM snapshot_policies ORDER BY source_path",
-        )?;
-        let policies = statement
-            .query_map([], policy_from_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(policies)
-    }
-
-    fn get_policy(&self, id: Uuid) -> Result<Option<SnapshotPolicy>, HelperError> {
-        self.connection
-            .query_row(
-                "SELECT id, filesystem_id, subvolume_id, source_path, mountpoint, snapshot_root, schedule, keep_hourly, keep_daily, keep_weekly, keep_monthly, enabled FROM snapshot_policies WHERE id = ?1",
-                params![id.to_string()],
-                policy_from_row,
-            )
-            .optional()
-            .map_err(HelperError::from)
-    }
-
-    fn upsert_policy(&self, policy: &SnapshotPolicy) -> Result<(), HelperError> {
-        self.connection.execute(
-            "INSERT INTO snapshot_policies (id, filesystem_id, subvolume_id, source_path, mountpoint, snapshot_root, schedule, keep_hourly, keep_daily, keep_weekly, keep_monthly, enabled, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CURRENT_TIMESTAMP)
-             ON CONFLICT(id) DO UPDATE SET filesystem_id = excluded.filesystem_id, subvolume_id = excluded.subvolume_id, source_path = excluded.source_path, mountpoint = excluded.mountpoint, snapshot_root = excluded.snapshot_root, schedule = excluded.schedule, keep_hourly = excluded.keep_hourly, keep_daily = excluded.keep_daily, keep_weekly = excluded.keep_weekly, keep_monthly = excluded.keep_monthly, enabled = excluded.enabled, updated_at = CURRENT_TIMESTAMP",
-            params![
-                policy.id.to_string(),
-                policy.filesystem_id.as_ref().map(|id| id.0.to_string()),
-                policy.subvolume_id.0 as i64,
-                policy.source_path.display().to_string(),
-                policy.mountpoint.display().to_string(),
-                policy.snapshot_root.display().to_string(),
-                policy.schedule.as_str(),
-                policy.keep_hourly as i64,
-                policy.keep_daily as i64,
-                policy.keep_weekly as i64,
-                policy.keep_monthly as i64,
-                i64::from(policy.enabled),
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn insert_managed_snapshot(
-        &self,
-        policy_id: Option<Uuid>,
-        snapshot: &Snapshot,
-    ) -> Result<(), HelperError> {
-        let tags = serde_json::to_string(&snapshot.tags)?;
-        self.connection.execute(
-            "INSERT OR REPLACE INTO managed_snapshots (id, policy_id, source_subvolume_id, path, created_at, tags_json, origin_tool, state) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)",
-            params![
-                snapshot.id.to_string(),
-                policy_id.map(|id| id.to_string()),
-                snapshot.source_subvolume.0 as i64,
-                snapshot.path.display().to_string(),
-                snapshot.created_at.to_rfc3339(),
-                tags,
-                snapshot_state_to_db(&snapshot.state),
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn list_all_managed_snapshots(&self) -> Result<Vec<Snapshot>, HelperError> {
-        let mut stmt = self.connection.prepare(
-            "SELECT id, source_subvolume_id, path, created_at, tags_json, origin_tool, state FROM managed_snapshots ORDER BY created_at DESC",
-        )?;
-        let snapshots = stmt
-            .query_map([], snapshot_from_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(snapshots)
-    }
-
-    fn find_managed_snapshot_id_by_path(&self, path: &Path) -> Result<Uuid, HelperError> {
-        let result: Option<String> = self.connection
-            .query_row(
-                "SELECT id FROM managed_snapshots WHERE path = ?1",
-                params![path.display().to_string()],
-                |row| row.get(0),
-            )
-            .optional()?;
-        result
-            .ok_or_else(|| HelperError::InvalidPolicy(format!(
-                "no managed snapshot at path {}",
-                path.display()
-            )))
-            .and_then(|id| {
-                id.parse::<Uuid>().map_err(|e| {
-                    HelperError::InvalidPolicy(format!("invalid uuid in db: {e}"))
-                })
-            })
-    }
-
-    fn delete_managed_snapshot(&self, id: Uuid) -> Result<(), HelperError> {
-        self.connection.execute(
-            "DELETE FROM managed_snapshots WHERE id = ?1",
-            params![id.to_string()],
-        )?;
-        Ok(())
-    }
-
-    fn update_snapshot_state(&self, id: Uuid, state: &SnapshotState) -> Result<(), HelperError> {
-        self.connection.execute(
-            "UPDATE managed_snapshots SET state = ?1 WHERE id = ?2",
-            params![snapshot_state_to_db(state), id.to_string()],
-        )?;
-        Ok(())
-    }
-
-    fn list_managed_snapshots_for_policy(
-        &self,
-        policy_id: Uuid,
-    ) -> Result<Vec<Snapshot>, HelperError> {
-        let mut statement = self.connection.prepare(
-            "SELECT id, source_subvolume_id, path, created_at, tags_json, origin_tool, state FROM managed_snapshots WHERE policy_id = ?1 ORDER BY created_at DESC",
-        )?;
-        let snapshots = statement
-            .query_map(params![policy_id.to_string()], snapshot_from_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(snapshots)
-    }
-
-    fn insert_policy_log(&self, log: &PolicyRunLog) -> Result<(), HelperError> {
-        let deleted = serde_json::to_string(&log.deleted_snapshots)?;
-        self.connection.execute(
-            "INSERT INTO policy_run_logs (id, policy_id, started_at, finished_at, status, created_snapshot, deleted_snapshots_json, error) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                log.id.to_string(),
-                log.policy_id.to_string(),
-                log.started_at.to_rfc3339(),
-                log.finished_at.to_rfc3339(),
-                policy_run_status_to_db(&log.status),
-                log.created_snapshot.as_ref().map(|path| path.display().to_string()),
-                deleted,
-                log.error,
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn list_policy_logs(&self, policy_id: Uuid) -> Result<Vec<PolicyRunLog>, HelperError> {
-        let mut statement = self.connection.prepare(
-            "SELECT id, policy_id, started_at, finished_at, status, created_snapshot, deleted_snapshots_json, error FROM policy_run_logs WHERE policy_id = ?1 ORDER BY started_at DESC LIMIT 50",
-        )?;
-        let logs = statement
-            .query_map(params![policy_id.to_string()], policy_log_from_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(logs)
-    }
-}
-
-fn add_column_if_missing(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-    definition: &str,
-) -> Result<(), HelperError> {
-    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<Vec<_>, _>>()?;
-    if !columns.iter().any(|existing| existing == column) {
-        connection.execute(
-            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
-            [],
-        )?;
-    }
-    Ok(())
-}
-
-fn policy_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SnapshotPolicy> {
-    let id: String = row.get(0)?;
-    let filesystem_id: Option<String> = row.get(1)?;
-    let schedule: String = row.get(6)?;
-    Ok(SnapshotPolicy {
-        id: parse_uuid_for_sql(id, 0)?,
-        filesystem_id: filesystem_id
-            .map(|value| parse_uuid_for_sql(value, 1).map(FilesystemId))
-            .transpose()?,
-        subvolume_id: SubvolumeId(row.get::<_, i64>(2)? as u64),
-        source_path: PathBuf::from(row.get::<_, String>(3)?),
-        mountpoint: PathBuf::from(row.get::<_, String>(4)?),
-        snapshot_root: PathBuf::from(row.get::<_, String>(5)?),
-        schedule: schedule.parse().map_err(|err: String| {
-            rusqlite::Error::FromSqlConversionFailure(
-                6,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, err)),
-            )
-        })?,
-        keep_hourly: row.get::<_, i64>(7)? as usize,
-        keep_daily: row.get::<_, i64>(8)? as usize,
-        keep_weekly: row.get::<_, i64>(9)? as usize,
-        keep_monthly: row.get::<_, i64>(10)? as usize,
-        enabled: row.get::<_, i64>(11)? != 0,
-    })
-}
-
-fn snapshot_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
-    let id: String = row.get(0)?;
-    let created_at: String = row.get(3)?;
-    let tags_json: String = row.get(4)?;
-    let origin_tool: Option<String> = row.get(5)?;
-    let state: String = row.get(6)?;
-    Ok(Snapshot {
-        id: parse_uuid_for_sql(id, 0)?,
-        source_subvolume: SubvolumeId(row.get::<_, i64>(1)? as u64),
-        path: PathBuf::from(row.get::<_, String>(2)?),
-        created_at: parse_datetime_for_sql(created_at, 3)?,
-        tags: serde_json::from_str(&tags_json).unwrap_or_default(),
-        origin: origin_tool
-            .map(|tool| SnapshotOrigin::External { tool: Some(tool) })
-            .unwrap_or(SnapshotOrigin::Managed),
-        state: snapshot_state_from_db(&state).map_err(|err| {
-            rusqlite::Error::FromSqlConversionFailure(
-                6,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, err)),
-            )
-        })?,
-    })
-}
-
-fn policy_log_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PolicyRunLog> {
-    let id: String = row.get(0)?;
-    let policy_id: String = row.get(1)?;
-    let started_at: String = row.get(2)?;
-    let finished_at: String = row.get(3)?;
-    let status: String = row.get(4)?;
-    let created_snapshot: Option<String> = row.get(5)?;
-    let deleted_json: String = row.get(6)?;
-    Ok(PolicyRunLog {
-        id: parse_uuid_for_sql(id, 0)?,
-        policy_id: parse_uuid_for_sql(policy_id, 1)?,
-        started_at: parse_datetime_for_sql(started_at, 2)?,
-        finished_at: parse_datetime_for_sql(finished_at, 3)?,
-        status: policy_run_status_from_db(&status).map_err(|err| {
-            rusqlite::Error::FromSqlConversionFailure(
-                4,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, err)),
-            )
-        })?,
-        created_snapshot: created_snapshot.map(PathBuf::from),
-        deleted_snapshots: serde_json::from_str(&deleted_json).unwrap_or_default(),
-        error: row.get(7)?,
-    })
-}
-
-fn parse_uuid_for_sql(value: String, index: usize) -> rusqlite::Result<Uuid> {
-    Uuid::parse_str(&value).map_err(|err| {
-        rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(err))
-    })
-}
-
-fn parse_datetime_for_sql(value: String, index: usize) -> rusqlite::Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(&value)
-        .map(|date| date.with_timezone(&Utc))
-        .map_err(|err| {
-            rusqlite::Error::FromSqlConversionFailure(
-                index,
-                rusqlite::types::Type::Text,
-                Box::new(err),
-            )
-        })
-}
-
-fn snapshot_state_to_db(state: &SnapshotState) -> &'static str {
-    match state {
-        SnapshotState::ReadOnly => "readonly",
-        SnapshotState::Unlocked => "unlocked",
-        SnapshotState::DirtyUnlocked => "dirty_unlocked",
-        SnapshotState::RollbackAnchor => "rollback_anchor",
-    }
-}
-
-fn snapshot_state_from_db(value: &str) -> Result<SnapshotState, String> {
-    match value {
-        "readonly" => Ok(SnapshotState::ReadOnly),
-        "unlocked" => Ok(SnapshotState::Unlocked),
-        "dirty_unlocked" => Ok(SnapshotState::DirtyUnlocked),
-        "rollback_anchor" => Ok(SnapshotState::RollbackAnchor),
-        _ => Err(format!("unknown snapshot state: {value}")),
-    }
-}
-
-fn policy_run_status_to_db(status: &PolicyRunStatus) -> &'static str {
-    match status {
-        PolicyRunStatus::Success => "success",
-        PolicyRunStatus::Failed => "failed",
-    }
-}
-
-fn policy_run_status_from_db(value: &str) -> Result<PolicyRunStatus, String> {
-    match value {
-        "success" => Ok(PolicyRunStatus::Success),
-        "failed" => Ok(PolicyRunStatus::Failed),
-        _ => Err(format!("unknown policy run status: {value}")),
-    }
-}
-
-fn state_db_path() -> PathBuf {
-    std::env::var_os("BTRFS_MANAGER_STATE_DB")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/btrfs-manager/state.db"))
 }
 
 fn systemd_unit_dir() -> PathBuf {
@@ -1404,6 +1407,23 @@ fn validate_path(path: &Path) -> Result<(), HelperError> {
     validate_absolute_no_traversal(path).map_err(HelperError::from)
 }
 
+fn validate_relative_btrfs_path(path: &Path, label: &str) -> Result<(), HelperError> {
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(HelperError::InvalidPolicy(format!(
+            "{label} must be relative to the Btrfs top-level and must not contain traversal: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 fn validate_managed_mount_target_with_roots(
     path: &Path,
@@ -1468,6 +1488,95 @@ fn detect_boot_integration() -> BootIntegration {
     } else {
         BootIntegration::Conservative
     }
+}
+
+fn current_boot_id() -> Option<String> {
+    if let Ok(value) = std::env::var("BTRFS_MANAGER_BOOT_ID") {
+        if !value.trim().is_empty() {
+            return Some(value);
+        }
+    }
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn rollback_plan_dir(top_level: &Path) -> PathBuf {
+    top_level.join("@btrfs-manager").join("rollback-plans")
+}
+
+fn rollback_plan_file(top_level: &Path, plan_id: Uuid) -> PathBuf {
+    rollback_plan_dir(top_level).join(format!("{plan_id}.json"))
+}
+
+fn write_rollback_plan_file(top_level: &Path, plan: &RollbackPlan) -> Result<(), HelperError> {
+    let dir = rollback_plan_dir(top_level);
+    std::fs::create_dir_all(&dir)?;
+    let path = rollback_plan_file(top_level, plan.id);
+    let data = serde_json::to_vec_pretty(plan)?;
+    std::fs::write(path, data)?;
+    Ok(())
+}
+
+enum RollbackPlanFileState {
+    Missing,
+    Pending(RollbackPlan),
+    Resolved,
+}
+
+fn read_rollback_plan_file_state(top_level: &Path) -> Result<RollbackPlanFileState, HelperError> {
+    let dir = rollback_plan_dir(top_level);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RollbackPlanFileState::Missing);
+        }
+        Err(err) => return Err(err.into()),
+    };
+
+    let mut newest: Option<RollbackPlan> = None;
+    let mut saw_plan_file = false;
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let data = std::fs::read(&path)?;
+        let plan: RollbackPlan = serde_json::from_slice(&data)?;
+        saw_plan_file = true;
+        if !matches!(plan.status, RollbackStatus::AwaitingReboot) {
+            continue;
+        }
+        if newest
+            .as_ref()
+            .is_none_or(|existing| existing.created_at < plan.created_at)
+        {
+            newest = Some(plan);
+        }
+    }
+    if let Some(plan) = newest {
+        Ok(RollbackPlanFileState::Pending(plan))
+    } else if saw_plan_file {
+        Ok(RollbackPlanFileState::Resolved)
+    } else {
+        Ok(RollbackPlanFileState::Missing)
+    }
+}
+
+fn update_rollback_plan_file_status(
+    top_level: &Path,
+    plan_id: Uuid,
+    status: RollbackStatus,
+) -> Result<(), HelperError> {
+    let path = rollback_plan_file(top_level, plan_id);
+    if !path.exists() {
+        return Ok(());
+    }
+    let data = std::fs::read(&path)?;
+    let mut plan: RollbackPlan = serde_json::from_slice(&data)?;
+    plan.status = status;
+    write_rollback_plan_file(top_level, &plan)
 }
 
 fn snapshots_from_subvolumes(subvolumes: &[Subvolume]) -> Vec<Snapshot> {
@@ -1655,7 +1764,9 @@ mod tests {
     #[test]
     fn list_subvolumes_returns_structured_inventory() {
         let tmp = std::env::temp_dir().join("btrfs-manager-test-toplevel");
-        unsafe { std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &tmp); }
+        unsafe {
+            std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &tmp);
+        }
         let runner = RecordingRunner {
             calls: RefCell::new(Vec::new()),
         };
@@ -1771,13 +1882,17 @@ mod tests {
     #[test]
     fn mounts_top_level_with_subvolid_five() {
         let tmp = std::env::temp_dir().join("btrfs-manager-test-toplevel2");
-        unsafe { std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &tmp); }
+        unsafe {
+            std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &tmp);
+        }
         let runner = RecordingRunner {
             calls: RefCell::new(Vec::new()),
         };
         let helper = Helper::new(runner);
         let response = helper
-            .handle(HelperRequest::MountTopLevel { mountpoint: "/".into() })
+            .handle(HelperRequest::MountTopLevel {
+                mountpoint: "/".into(),
+            })
             .unwrap();
         // Response must include the mount path.
         assert!(response.data.is_some());
@@ -1786,7 +1901,11 @@ mod tests {
         let mount_call = calls.iter().find(|(prog, _)| prog == "mount").unwrap();
         assert!(mount_call.1.contains(&"subvolid=5".to_string()));
         assert!(mount_call.1.contains(&"/dev/mapper/cryptroot".to_string()));
-        assert!(!mount_call.1.contains(&"/dev/mapper/cryptroot[/@]".to_string()));
+        assert!(
+            !mount_call
+                .1
+                .contains(&"/dev/mapper/cryptroot[/@]".to_string())
+        );
         assert!(!mount_call.1.contains(&"ro,subvolid=5".to_string()));
         drop(calls);
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1916,5 +2035,418 @@ mod tests {
             preview.delete[0].path,
             PathBuf::from("/mnt/.snapshots/delete")
         );
+    }
+
+    // Serialize tests that touch BTRFS_MANAGER_STATE_DB (process-global env var).
+    static DB_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    fn with_test_db<T>(f: impl FnOnce() -> T) -> T {
+        let _g = DB_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let db_path =
+            std::env::temp_dir().join(format!("btrfs-manager-test-{}.db", Uuid::new_v4()));
+        // SAFETY: DB_LOCK serializes all callers; no other thread reads this var concurrently.
+        unsafe {
+            std::env::set_var("BTRFS_MANAGER_STATE_DB", &db_path);
+        }
+        let result = f();
+        unsafe {
+            std::env::remove_var("BTRFS_MANAGER_STATE_DB");
+        }
+        std::fs::remove_file(&db_path).ok();
+        result
+    }
+
+    fn find_snap(store: &StateStore, id: Uuid) -> Snapshot {
+        store
+            .list_all_managed_snapshots()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn sqlite_persists_unlock_and_lock_state() {
+        with_test_db(|| {
+            let id = Uuid::new_v4();
+            let snap = Snapshot {
+                id,
+                source_subvolume: SubvolumeId(256),
+                path: PathBuf::from("@snapshots/managed-home-2024-01-01_00-00-00"),
+                created_at: Utc::now(),
+                tags: vec![],
+                origin: SnapshotOrigin::Managed,
+                state: SnapshotState::ReadOnly,
+            };
+            let store = StateStore::open().unwrap();
+            store.insert_managed_snapshot(None, &snap).unwrap();
+
+            store
+                .update_snapshot_state(id, &SnapshotState::Unlocked)
+                .unwrap();
+            let found = find_snap(&store, id);
+            assert!(
+                matches!(found.state, SnapshotState::Unlocked),
+                "should be Unlocked after unlock"
+            );
+            assert!(!matches!(
+                found.state,
+                SnapshotState::ReadOnly | SnapshotState::RollbackAnchor
+            ));
+
+            store
+                .update_snapshot_state(id, &SnapshotState::ReadOnly)
+                .unwrap();
+            let found = find_snap(&store, id);
+            assert!(
+                matches!(found.state, SnapshotState::ReadOnly),
+                "should be ReadOnly after lock"
+            );
+        });
+    }
+
+    #[test]
+    fn set_managed_readonly_rejects_path_not_in_db() {
+        with_test_db(|| {
+            let tmp = std::env::temp_dir()
+                .join(format!("btrfs-manager-readonly-state-{}", Uuid::new_v4()));
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &tmp);
+            }
+            let runner = RecordingRunner {
+                calls: RefCell::new(Vec::new()),
+            };
+            let helper = Helper::new(runner);
+            let err = helper
+                .handle(HelperRequest::SetManagedSnapshotReadOnly {
+                    mountpoint: PathBuf::from("/mnt"),
+                    subvol_path: PathBuf::from("@snapshots/external-tool-snap"),
+                    readonly: false,
+                })
+                .unwrap_err();
+            // Path not registered → rejected before any btrfs command.
+            assert!(
+                matches!(err, HelperError::InvalidPolicy(_)),
+                "expected InvalidPolicy, got {err}"
+            );
+            assert!(
+                !helper
+                    .runner
+                    .calls
+                    .borrow()
+                    .iter()
+                    .any(|(p, a)| { p == "btrfs" && a.contains(&"property".to_string()) }),
+                "btrfs property set must not be called for unregistered paths"
+            );
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+            }
+            std::fs::remove_dir_all(tmp).ok();
+        });
+    }
+
+    struct RollbackRunner {
+        calls: RefCell<Vec<(String, Vec<String>)>>,
+    }
+
+    impl CommandRunner for RollbackRunner {
+        fn run(&self, program: &str, args: &[String]) -> Result<String, HelperError> {
+            self.calls
+                .borrow_mut()
+                .push((program.to_string(), args.to_vec()));
+            if program == "findmnt" && args.iter().any(|arg| arg == "UUID") {
+                Ok("550e8400-e29b-41d4-a716-446655440000\n".into())
+            } else if program == "findmnt" && args.iter().any(|arg| arg == "--mountpoint") {
+                Ok("mounted\n".into())
+            } else if program == "findmnt" && args.iter().any(|arg| arg == "OPTIONS") {
+                Ok("rw,relatime,subvol=/@\n".into())
+            } else if program == "findmnt" && args.iter().any(|arg| arg == "SOURCE") {
+                Ok("/dev/loop-test\n".into())
+            } else if program == "btrfs"
+                && args.first().map(String::as_str) == Some("subvolume")
+                && args.get(1).map(String::as_str) == Some("snapshot")
+            {
+                let source = PathBuf::from(args.get(2).expect("snapshot source"));
+                let destination = PathBuf::from(args.get(3).expect("snapshot destination"));
+                if !source.exists() {
+                    return Err(HelperError::InvalidPolicy(format!(
+                        "missing snapshot source {}",
+                        source.display()
+                    )));
+                }
+                std::fs::create_dir_all(destination)?;
+                Ok("snapshot created\n".into())
+            } else {
+                Ok("ok\n".into())
+            }
+        }
+    }
+
+    #[test]
+    fn rollback_rejects_absolute_or_traversing_paths_before_commands() {
+        let runner = RecordingRunner {
+            calls: RefCell::new(Vec::new()),
+        };
+        let helper = Helper::new(runner);
+        let err = helper
+            .handle(HelperRequest::StageRollback {
+                mountpoint: PathBuf::from("/mnt"),
+                snapshot_path: PathBuf::from("/etc"),
+                return_snapshot_path: PathBuf::from("@btrfs-manager/return"),
+            })
+            .unwrap_err();
+        assert!(matches!(err, HelperError::InvalidPolicy(_)));
+        assert!(helper.runner.calls.borrow().is_empty());
+
+        let err = helper
+            .handle(HelperRequest::StageRollback {
+                mountpoint: PathBuf::from("/mnt"),
+                snapshot_path: PathBuf::from("@snapshots/one"),
+                return_snapshot_path: PathBuf::from("../escape"),
+            })
+            .unwrap_err();
+        assert!(matches!(err, HelperError::InvalidPolicy(_)));
+        assert!(helper.runner.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn rollback_stage_and_revert_preserve_return_anchor() {
+        with_test_db(|| {
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_BOOT_ID", "boot-before-rollback");
+            }
+            let test_root =
+                std::env::temp_dir().join(format!("btrfs-manager-rollback-{}", Uuid::new_v4()));
+            let fs_uuid = "550e8400-e29b-41d4-a716-446655440000";
+            let top = test_root.join(fs_uuid);
+            let active_root = top.join("@");
+            let source_snapshot = top.join("@btrfs-manager/managed-root-snap");
+            std::fs::create_dir_all(active_root.join("etc")).unwrap();
+            std::fs::write(active_root.join("etc/original.conf"), "original\n").unwrap();
+            std::fs::create_dir_all(&source_snapshot).unwrap();
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
+            }
+
+            let runner = RollbackRunner {
+                calls: RefCell::new(Vec::new()),
+            };
+            let helper = Helper::new(runner);
+            let response = helper
+                .handle(HelperRequest::StageRollback {
+                    mountpoint: PathBuf::from("/mnt"),
+                    snapshot_path: PathBuf::from("@btrfs-manager/managed-root-snap"),
+                    return_snapshot_path: PathBuf::from("@btrfs-manager/return-root"),
+                })
+                .unwrap();
+            let plan: RollbackPlan = serde_json::from_value(response.data.unwrap()).unwrap();
+            let plan_file = top
+                .join("@btrfs-manager")
+                .join("rollback-plans")
+                .join(format!("{}.json", plan.id));
+            let state_db = top.join("@btrfs-manager").join("state").join("state.db");
+
+            assert!(top.join("@").exists(), "staged root should exist");
+            assert!(
+                top.join("@btrfs-manager/return-root/etc/original.conf")
+                    .exists(),
+                "current root should be preserved as return anchor"
+            );
+            assert!(
+                plan_file.exists(),
+                "rollback plan should be persisted outside the restored root"
+            );
+            assert!(
+                state_db.exists(),
+                "state database should be persisted outside the restored root"
+            );
+
+            let store = StateStore::open_at(state_db.clone()).unwrap();
+            let anchor = store
+                .list_all_managed_snapshots()
+                .unwrap()
+                .into_iter()
+                .find(|snapshot| snapshot.path == PathBuf::from("@btrfs-manager/return-root"))
+                .expect("rollback anchor should be stored");
+            assert!(matches!(anchor.state, SnapshotState::RollbackAnchor));
+            assert!(
+                anchor
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "before-restoring:@btrfs-manager/managed-root-snap")
+            );
+            let pending = store.get_pending_rollback().unwrap().unwrap();
+            assert_eq!(
+                pending.created_boot_id.as_deref(),
+                Some("boot-before-rollback")
+            );
+            assert_eq!(
+                pending.description.as_deref(),
+                Some("Before restoring @btrfs-manager/managed-root-snap")
+            );
+
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_BOOT_ID", "boot-after-rollback");
+            }
+            let pending_response = helper.handle(HelperRequest::GetPendingRollback).unwrap();
+            let prompt: RollbackPrompt =
+                serde_json::from_value(pending_response.data.unwrap()).unwrap();
+            assert!(prompt.rebooted_since_staging);
+
+            unsafe {
+                std::env::set_var(
+                    "BTRFS_MANAGER_STATE_DB",
+                    test_root.join("restored-root-empty-state.db"),
+                );
+            }
+            let fallback_response = helper.handle(HelperRequest::GetPendingRollback).unwrap();
+            let fallback_prompt: RollbackPrompt =
+                serde_json::from_value(fallback_response.data.unwrap()).unwrap();
+            assert_eq!(fallback_prompt.plan.id, plan.id);
+            assert!(fallback_prompt.rebooted_since_staging);
+
+            helper
+                .handle(HelperRequest::RevertRollback { plan_id: plan.id })
+                .unwrap();
+            assert!(
+                top.join("@/etc/original.conf").exists(),
+                "revert should restore the return anchor to the active root path"
+            );
+            let file_plan: RollbackPlan =
+                serde_json::from_slice(&std::fs::read(&plan_file).unwrap()).unwrap();
+            assert!(matches!(file_plan.status, RollbackStatus::Reverted));
+            assert!(store.get_pending_rollback().unwrap().is_none());
+            let no_pending_after_revert = helper.handle(HelperRequest::GetPendingRollback).unwrap();
+            assert!(no_pending_after_revert.data.is_none());
+
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_BOOT_ID");
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+            }
+            std::fs::remove_dir_all(test_root).ok();
+        });
+    }
+
+    #[test]
+    fn rollback_commit_resolves_top_level_plan_even_if_db_would_still_be_pending() {
+        with_test_db(|| {
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_BOOT_ID", "boot-before-rollback");
+            }
+            let test_root =
+                std::env::temp_dir().join(format!("btrfs-manager-commit-{}", Uuid::new_v4()));
+            let fs_uuid = "550e8400-e29b-41d4-a716-446655440000";
+            let top = test_root.join(fs_uuid);
+            let active_root = top.join("@");
+            let source_snapshot = top.join("@btrfs-manager/managed-root-snap");
+            std::fs::create_dir_all(active_root.join("etc")).unwrap();
+            std::fs::write(active_root.join("etc/original.conf"), "original\n").unwrap();
+            std::fs::create_dir_all(&source_snapshot).unwrap();
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
+            }
+
+            let runner = RollbackRunner {
+                calls: RefCell::new(Vec::new()),
+            };
+            let helper = Helper::new(runner);
+            let response = helper
+                .handle(HelperRequest::StageRollback {
+                    mountpoint: PathBuf::from("/mnt"),
+                    snapshot_path: PathBuf::from("@btrfs-manager/managed-root-snap"),
+                    return_snapshot_path: PathBuf::from("@btrfs-manager/return-root"),
+                })
+                .unwrap();
+            let plan: RollbackPlan = serde_json::from_value(response.data.unwrap()).unwrap();
+            let plan_file = top
+                .join("@btrfs-manager")
+                .join("rollback-plans")
+                .join(format!("{}.json", plan.id));
+            let state_db = top.join("@btrfs-manager").join("state").join("state.db");
+            let store = StateStore::open_at(state_db).unwrap();
+            assert!(
+                store.get_pending_rollback().unwrap().is_some(),
+                "DB should still have an awaiting rollback before commit"
+            );
+
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_BOOT_ID", "boot-after-rollback");
+            }
+            helper
+                .handle(HelperRequest::CommitRollback { plan_id: plan.id })
+                .unwrap();
+
+            let file_plan: RollbackPlan =
+                serde_json::from_slice(&std::fs::read(&plan_file).unwrap()).unwrap();
+            assert!(matches!(file_plan.status, RollbackStatus::Activated));
+            assert!(store.get_pending_rollback().unwrap().is_none());
+            let no_pending_after_commit = helper.handle(HelperRequest::GetPendingRollback).unwrap();
+            assert!(
+                no_pending_after_commit.data.is_none(),
+                "resolved top-level plan should suppress stale rollback prompts"
+            );
+
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_BOOT_ID");
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+            }
+            std::fs::remove_dir_all(test_root).ok();
+        });
+    }
+
+    #[test]
+    fn rollback_creates_manager_subvolume_before_persisting_state() {
+        with_test_db(|| {
+            let test_root =
+                std::env::temp_dir().join(format!("btrfs-manager-new-state-{}", Uuid::new_v4()));
+            let fs_uuid = "550e8400-e29b-41d4-a716-446655440000";
+            let top = test_root.join(fs_uuid);
+            let active_root = top.join("@");
+            let source_snapshot = top.join("@snapshots/managed-root-snap");
+            std::fs::create_dir_all(active_root.join("etc")).unwrap();
+            std::fs::write(active_root.join("etc/original.conf"), "original\n").unwrap();
+            std::fs::create_dir_all(&source_snapshot).unwrap();
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
+                std::env::set_var("BTRFS_MANAGER_BOOT_ID", "boot-before-rollback");
+            }
+
+            let runner = RollbackRunner {
+                calls: RefCell::new(Vec::new()),
+            };
+            let helper = Helper::new(runner);
+            helper
+                .handle(HelperRequest::StageRollback {
+                    mountpoint: PathBuf::from("/mnt"),
+                    snapshot_path: PathBuf::from("@snapshots/managed-root-snap"),
+                    return_snapshot_path: PathBuf::from("@btrfs-manager/return-root"),
+                })
+                .unwrap();
+
+            assert!(
+                helper.runner.calls.borrow().iter().any(|(program, args)| {
+                    program == "btrfs"
+                        && args.first().map(String::as_str) == Some("subvolume")
+                        && args.get(1).map(String::as_str) == Some("create")
+                        && args
+                            .get(2)
+                            .is_some_and(|path| path.ends_with("@btrfs-manager"))
+                }),
+                "@btrfs-manager must be created as a Btrfs subvolume, not a plain directory"
+            );
+            assert!(
+                top.join("@btrfs-manager/state/state.db").exists(),
+                "state DB should live under the manager subvolume path"
+            );
+
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_BOOT_ID");
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+            }
+            std::fs::remove_dir_all(test_root).ok();
+        });
     }
 }

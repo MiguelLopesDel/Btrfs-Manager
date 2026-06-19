@@ -1,11 +1,12 @@
 use btrfs_manager_core::{
-    PolicyRunLog, PolicySchedule, RetentionPreview, SnapshotPolicy, Subvolume, SubvolumeKind,
+    PolicyRunLog, PolicySchedule, RetentionPreview, RollbackPlan, RollbackPrompt, SnapshotPolicy,
+    Subvolume, SubvolumeKind,
 };
 use btrfs_manager_helper::{
     FilesystemDiscovery, Helper, HelperRequest, HelperResponse, SubvolumeInventory,
     SystemCommandRunner,
 };
-use chrono::{DateTime, Datelike, Local, Utc};
+use chrono::{DateTime, Datelike, Local, Timelike, Utc};
 use gtk4::glib;
 use gtk4::prelude::*;
 
@@ -18,8 +19,8 @@ use std::process::Command;
 use std::rc::Rc;
 use uuid::Uuid;
 
-use anyhow::Context as _;
 use crate::dbus_client;
+use anyhow::Context as _;
 
 #[derive(Clone, Default, PartialEq, Eq)]
 enum SnapshotFilter {
@@ -27,6 +28,22 @@ enum SnapshotFilter {
     All,
     Managed,
     External,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+enum TimeRangeFilter {
+    Today,
+    #[default]
+    Last7Days,
+    Last30Days,
+    AllHistory,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+enum ViewMode {
+    #[default]
+    ByDay,
+    ByHour,
 }
 
 #[derive(Clone)]
@@ -38,6 +55,11 @@ struct UiState {
     suppress_selector_signal: Rc<Cell<bool>>,
     toast_overlay: libadwaita::ToastOverlay,
     filter: Rc<RefCell<SnapshotFilter>>,
+    time_range: Rc<RefCell<TimeRangeFilter>>,
+    view_mode: Rc<RefCell<ViewMode>>,
+    summary_scope: gtk4::Label,
+    summary_counts: gtk4::Label,
+    summary_filters: gtk4::Label,
     spinner: gtk4::Spinner,
 }
 
@@ -94,19 +116,65 @@ fn build_ui(app: &libadwaita::Application) {
     header.pack_end(&refresh);
     header.pack_start(&spinner);
 
-    let title = gtk4::Label::builder()
-        .label("Snapshots")
+    let page_title = gtk4::Label::builder()
+        .label("Snapshot Inventory")
         .halign(gtk4::Align::Start)
         .css_classes(["title-1"])
         .build();
+    let summary_scope = gtk4::Label::builder()
+        .label("No filesystem selected")
+        .halign(gtk4::Align::Start)
+        .hexpand(true)
+        .ellipsize(gtk4::pango::EllipsizeMode::Middle)
+        .css_classes(["heading"])
+        .build();
+    let summary_counts = gtk4::Label::builder()
+        .label("Snapshots 0 · Subvolumes 0")
+        .halign(gtk4::Align::Start)
+        .css_classes(["caption", "dim-label"])
+        .build();
+    let summary_filters = gtk4::Label::builder()
+        .label("All · 7 days · By day")
+        .halign(gtk4::Align::Start)
+        .css_classes(["caption", "dim-label"])
+        .build();
+    let summary_text = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
+        .spacing(2)
+        .hexpand(true)
+        .build();
+    summary_text.append(&summary_scope);
+    summary_text.append(&summary_counts);
+    summary_text.append(&summary_filters);
+    let summary_icon = gtk4::Image::builder()
+        .icon_name("drive-harddisk-symbolic")
+        .pixel_size(32)
+        .valign(gtk4::Align::Center)
+        .build();
+    let summary_panel = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(14)
+        .margin_top(2)
+        .margin_bottom(4)
+        .css_classes(["card"])
+        .build();
+    summary_panel.append(&summary_icon);
+    summary_panel.append(&summary_text);
+
     let search = gtk4::SearchEntry::builder()
-        .placeholder_text("Search snapshots")
+        .placeholder_text("Search by name, tag, or date")
         .hexpand(true)
         .build();
     let filesystem_selector = gtk4::ComboBoxText::builder()
         .tooltip_text("Btrfs filesystem")
         .hexpand(true)
         .build();
+    let browse_row = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(10)
+        .build();
+    browse_row.append(&filesystem_selector);
+    browse_row.append(&search);
 
     // Filter chips: All / Managed / External
     let filter_all = gtk4::ToggleButton::builder()
@@ -125,9 +193,82 @@ fn build_ui(app: &libadwaita::Application) {
         .orientation(gtk4::Orientation::Horizontal)
         .spacing(4)
         .build();
+    filter_row.append(
+        &gtk4::Label::builder()
+            .label("Type")
+            .halign(gtk4::Align::Start)
+            .valign(gtk4::Align::Center)
+            .css_classes(["caption", "dim-label"])
+            .build(),
+    );
     filter_row.append(&filter_all);
     filter_row.append(&filter_managed);
     filter_row.append(&filter_external);
+
+    // Time range filter row
+    let tr_today = gtk4::ToggleButton::builder().label("Today").build();
+    let tr_7 = gtk4::ToggleButton::builder()
+        .label("7 days")
+        .group(&tr_today)
+        .active(true)
+        .build();
+    let tr_30 = gtk4::ToggleButton::builder()
+        .label("30 days")
+        .group(&tr_today)
+        .build();
+    let tr_all = gtk4::ToggleButton::builder()
+        .label("All")
+        .group(&tr_today)
+        .build();
+    let tr_left = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(4)
+        .hexpand(true)
+        .build();
+    tr_left.append(&tr_today);
+    tr_left.append(&tr_7);
+    tr_left.append(&tr_30);
+    tr_left.append(&tr_all);
+
+    // View mode toggle (By day / By hour)
+    let vm_day = gtk4::ToggleButton::builder()
+        .label("By day")
+        .active(true)
+        .build();
+    let vm_hour = gtk4::ToggleButton::builder()
+        .label("By hour")
+        .group(&vm_day)
+        .build();
+    let vm_right = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(4)
+        .halign(gtk4::Align::End)
+        .build();
+    vm_right.append(&vm_day);
+    vm_right.append(&vm_hour);
+
+    let time_range_row = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(14)
+        .build();
+    tr_left.prepend(
+        &gtk4::Label::builder()
+            .label("Range")
+            .halign(gtk4::Align::Start)
+            .valign(gtk4::Align::Center)
+            .css_classes(["caption", "dim-label"])
+            .build(),
+    );
+    vm_right.prepend(
+        &gtk4::Label::builder()
+            .label("Group")
+            .halign(gtk4::Align::Start)
+            .valign(gtk4::Align::Center)
+            .css_classes(["caption", "dim-label"])
+            .build(),
+    );
+    time_range_row.append(&tr_left);
+    time_range_row.append(&vm_right);
 
     let list = gtk4::ListBox::builder()
         .selection_mode(gtk4::SelectionMode::Single)
@@ -157,10 +298,11 @@ fn build_ui(app: &libadwaita::Application) {
         .margin_end(18)
         .vexpand(true)
         .build();
-    content.append(&title);
-    content.append(&filesystem_selector);
-    content.append(&search);
+    content.append(&page_title);
+    content.append(&summary_panel);
+    content.append(&browse_row);
     content.append(&filter_row);
+    content.append(&time_range_row);
     content.append(&list_scroll);
 
     let root = gtk4::Box::builder()
@@ -180,6 +322,11 @@ fn build_ui(app: &libadwaita::Application) {
         suppress_selector_signal,
         toast_overlay: toast_overlay.clone(),
         filter: Rc::new(RefCell::new(SnapshotFilter::All)),
+        time_range: Rc::new(RefCell::new(TimeRangeFilter::Last7Days)),
+        view_mode: Rc::new(RefCell::new(ViewMode::ByDay)),
+        summary_scope: summary_scope.clone(),
+        summary_counts: summary_counts.clone(),
+        summary_filters: summary_filters.clone(),
         spinner: spinner.clone(),
     };
 
@@ -204,6 +351,43 @@ fn build_ui(app: &libadwaita::Application) {
                     search_for_filter.text().as_str(),
                     state_for_filter.clone(),
                 );
+            }
+        });
+    }
+
+    // Wire time range chips.
+    for (btn, value) in [
+        (&tr_today, TimeRangeFilter::Today),
+        (&tr_7, TimeRangeFilter::Last7Days),
+        (&tr_30, TimeRangeFilter::Last30Days),
+        (&tr_all, TimeRangeFilter::AllHistory),
+    ] {
+        let state = ui_state.clone();
+        let list_c = list.clone();
+        let search_c = search.clone();
+        btn.connect_toggled(move |b| {
+            if !b.is_active() {
+                return;
+            }
+            *state.time_range.borrow_mut() = value.clone();
+            if let Some(inventory) = state.inventory.borrow().as_ref() {
+                render_inventory(&list_c, inventory, search_c.text().as_str(), state.clone());
+            }
+        });
+    }
+
+    // Wire view mode toggle.
+    for (btn, value) in [(&vm_day, ViewMode::ByDay), (&vm_hour, ViewMode::ByHour)] {
+        let state = ui_state.clone();
+        let list_c = list.clone();
+        let search_c = search.clone();
+        btn.connect_toggled(move |b| {
+            if !b.is_active() {
+                return;
+            }
+            *state.view_mode.borrow_mut() = value.clone();
+            if let Some(inventory) = state.inventory.borrow().as_ref() {
+                render_inventory(&list_c, inventory, search_c.text().as_str(), state.clone());
             }
         });
     }
@@ -305,6 +489,8 @@ fn build_ui(app: &libadwaita::Application) {
         }
     }
 
+    check_pending_rollback(window.upcast_ref(), &ui_state.toast_overlay);
+
     discover_and_load(
         list.clone(),
         ui_state,
@@ -374,7 +560,9 @@ fn discover_and_load(
                         &err.to_string(),
                     ),
                 },
-                None => set_status_row(&list, "No filesystem discovery returned", &response.message),
+                None => {
+                    set_status_row(&list, "No filesystem discovery returned", &response.message)
+                }
             },
             Err(err) => set_status_row(&list, "Filesystem discovery failed", &err.to_string()),
         }
@@ -393,7 +581,8 @@ fn load_mountpoint(list: gtk4::ListBox, state: UiState, query: String, mountpoin
     glib::MainContext::default().spawn_local(async move {
         let result = handle_privileged_async(HelperRequest::ListSubvolumes {
             mountpoint: mountpoint.clone(),
-        }).await;
+        })
+        .await;
         state.spinner.stop();
         match result {
             Ok(response) => match response.data {
@@ -435,15 +624,14 @@ fn filesystem_label(filesystem: &btrfs_manager_core::models::FilesystemSummary) 
         .iter()
         .find(|mount| mount.is_active_root)
         .or_else(|| filesystem.mounts.first());
-    let mountpoint = primary_mount
+    let _mountpoint = primary_mount
         .map(|mount| mount.mountpoint.display().to_string())
         .unwrap_or_else(|| "not mounted".to_string());
-    let device = filesystem
+    filesystem
         .devices
         .first()
-        .map(|device| device.display().to_string())
-        .unwrap_or_else(|| "unknown device".to_string());
-    format!("{mountpoint} on {device}")
+        .map(|d| d.display().to_string())
+        .unwrap_or_else(|| "unknown device".to_string())
 }
 
 async fn handle_privileged_async(request: HelperRequest) -> anyhow::Result<HelperResponse> {
@@ -513,13 +701,23 @@ fn managed_mount_roots_exist() -> bool {
     browse_mount_root().exists()
 }
 
-fn snapshot_subtitle_full(id: u64, mounted: bool, target: &std::path::Path, tags: &[String]) -> String {
-    let mut parts = vec![format!("ID {id}")];
+fn snapshot_subtitle(
+    id: u64,
+    path: &std::path::Path,
+    unlocked: bool,
+    mounted: bool,
+    mount_target: &std::path::Path,
+    tags: &[String],
+) -> String {
+    let mut parts: Vec<String> = vec![format!("ID {id}"), path.display().to_string()];
+    if unlocked {
+        parts.push("Writable".into());
+    }
     if !tags.is_empty() {
         parts.push(tags.join(", "));
     }
     if mounted {
-        parts.push(format!("mounted at {}", target.display()));
+        parts.push(format!("mounted at {}", mount_target.display()));
     }
     parts.join(" · ")
 }
@@ -528,6 +726,93 @@ fn show_toast(toast_overlay: &libadwaita::ToastOverlay, message: &str) {
     toast_overlay.add_toast(libadwaita::Toast::new(message));
 }
 
+fn check_pending_rollback(window: &gtk4::Window, toast_overlay: &libadwaita::ToastOverlay) {
+    if let Ok(response) = handle_privileged(HelperRequest::GetPendingRollback) {
+        if let Some(data) = response.data {
+            if let Ok(prompt) = serde_json::from_value::<RollbackPrompt>(data.clone()) {
+                show_pending_rollback_dialog(window, toast_overlay, prompt);
+            } else if let Ok(plan) = serde_json::from_value::<RollbackPlan>(data) {
+                show_pending_rollback_dialog(
+                    window,
+                    toast_overlay,
+                    RollbackPrompt {
+                        plan,
+                        rebooted_since_staging: false,
+                    },
+                );
+            }
+        }
+    }
+}
+
+fn show_pending_rollback_dialog(
+    window: &gtk4::Window,
+    toast_overlay: &libadwaita::ToastOverlay,
+    prompt: RollbackPrompt,
+) {
+    let plan = prompt.plan;
+    let plan_id = plan.id;
+    let src = plan
+        .source_snapshot_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("snapshot")
+        .to_string();
+    let description = plan
+        .description
+        .as_deref()
+        .unwrap_or("Previous system snapshot");
+    let dialog = if prompt.rebooted_since_staging {
+        libadwaita::AlertDialog::builder()
+            .heading("Rollback booted")
+            .body(format!(
+                "The system appears to have rebooted into {src}.\n\nKeep this restored system, or revert to the saved return snapshot: {description}."
+            ))
+            .build()
+    } else {
+        libadwaita::AlertDialog::builder()
+            .heading("Rollback staged")
+            .body(format!(
+                "A rollback to {src} is staged for the next reboot.\n\nReboot to activate it, or revert now to cancel and restore the saved return snapshot."
+            ))
+            .build()
+    };
+    if prompt.rebooted_since_staging {
+        dialog.add_response("revert", "Revert");
+        dialog.add_response("commit", "Keep restored system");
+        dialog.add_response("later", "Decide later");
+        dialog.set_default_response(Some("commit"));
+        dialog.set_response_appearance("commit", libadwaita::ResponseAppearance::Suggested);
+    } else {
+        dialog.add_response("revert", "Cancel rollback");
+        dialog.add_response("ok", "Keep staged");
+        dialog.set_default_response(Some("ok"));
+    }
+    dialog.set_response_appearance("revert", libadwaita::ResponseAppearance::Destructive);
+
+    let toast_overlay = toast_overlay.clone();
+    let window_ref = window.clone();
+    dialog.connect_response(None, move |_, response| {
+        match response {
+            "commit" => match handle_privileged(HelperRequest::CommitRollback { plan_id }) {
+                Ok(_) => show_toast(&toast_overlay, "Rollback kept as the current system"),
+                Err(err) => show_toast(&toast_overlay, &format!("Failed to keep rollback: {err}")),
+            },
+            "revert" => match handle_privileged(HelperRequest::RevertRollback { plan_id }) {
+                Ok(_) => show_toast(
+                    &toast_overlay,
+                    "Rollback reverted — reboot to return to the previous system",
+                ),
+                Err(err) => {
+                    show_toast(&toast_overlay, &format!("Failed to revert rollback: {err}"))
+                }
+            },
+            _ => return,
+        }
+        let _ = window_ref.activate_action("win.refresh", None);
+    });
+    dialog.present(Some(window));
+}
 
 fn short_snapshot_mount_name(path: &std::path::Path) -> String {
     let mut components = path
@@ -574,6 +859,13 @@ fn append_info_row(list: &gtk4::ListBox, title: &str, subtitle: &str) {
         .title(title)
         .subtitle(subtitle)
         .build();
+    row.add_prefix(
+        &gtk4::Image::builder()
+            .icon_name("dialog-information-symbolic")
+            .pixel_size(20)
+            .valign(gtk4::Align::Center)
+            .build(),
+    );
     list.append(&row);
 }
 
@@ -613,6 +905,89 @@ fn append_section_header(list: &gtk4::ListBox, title: &str) {
     list.append(&row);
 }
 
+fn filter_label(filter: &SnapshotFilter) -> &'static str {
+    match filter {
+        SnapshotFilter::All => "All",
+        SnapshotFilter::Managed => "Managed",
+        SnapshotFilter::External => "External",
+    }
+}
+
+fn time_range_label(time_range: &TimeRangeFilter) -> &'static str {
+    match time_range {
+        TimeRangeFilter::Today => "Today",
+        TimeRangeFilter::Last7Days => "7 days",
+        TimeRangeFilter::Last30Days => "30 days",
+        TimeRangeFilter::AllHistory => "All history",
+    }
+}
+
+fn view_mode_label(view_mode: &ViewMode) -> &'static str {
+    match view_mode {
+        ViewMode::ByDay => "By day",
+        ViewMode::ByHour => "By hour",
+    }
+}
+
+fn update_inventory_summary(
+    state: &UiState,
+    inventory: &SubvolumeInventory,
+    visible_snapshots: usize,
+    total_snapshots: usize,
+    managed_snapshots: usize,
+    external_snapshots: usize,
+    visible_subvolumes: usize,
+    query: &str,
+) {
+    state
+        .summary_scope
+        .set_label(&inventory.mountpoint.display().to_string());
+    state.summary_counts.set_label(&format!(
+        "{visible_snapshots} visible snapshots · {total_snapshots} total · {managed_snapshots} managed · {external_snapshots} external · {visible_subvolumes} subvolumes"
+    ));
+    let filter = state.filter.borrow();
+    let time_range = state.time_range.borrow();
+    let view_mode = state.view_mode.borrow();
+    let search = if query.trim().is_empty() {
+        "No search".to_string()
+    } else {
+        format!("Search: {}", query.trim())
+    };
+    state.summary_filters.set_label(&format!(
+        "{} · {} · {} · {}",
+        filter_label(&filter),
+        time_range_label(&time_range),
+        view_mode_label(&view_mode),
+        search
+    ));
+}
+
+fn snapshot_prefix_icon(snapshot: &Subvolume, is_mounted: bool) -> gtk4::Image {
+    let icon_name = if is_mounted {
+        "drive-harddisk-symbolic"
+    } else if snapshot.unlocked {
+        "changes-allow-symbolic"
+    } else if snapshot.managed {
+        "camera-photo-symbolic"
+    } else {
+        "document-open-recent-symbolic"
+    };
+    gtk4::Image::builder()
+        .icon_name(icon_name)
+        .pixel_size(20)
+        .valign(gtk4::Align::Center)
+        .build()
+}
+
+fn linked_button_group() -> gtk4::Box {
+    gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(0)
+        .valign(gtk4::Align::Center)
+        .css_classes(["linked"])
+        .build()
+}
+
 fn is_snapshot_kind(kind: &SubvolumeKind) -> bool {
     matches!(
         kind,
@@ -625,10 +1000,111 @@ fn matches_query(subvolume: &Subvolume, query: &str) -> bool {
     if q.is_empty() {
         return true;
     }
-    if subvolume.path.to_string_lossy().to_ascii_lowercase().contains(&q) {
+    if subvolume
+        .path
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .contains(&q)
+    {
         return true;
     }
-    subvolume.tags.iter().any(|tag| tag.to_ascii_lowercase().contains(&q))
+    if subvolume
+        .tags
+        .iter()
+        .any(|tag| tag.to_ascii_lowercase().contains(&q))
+    {
+        return true;
+    }
+    // Date matching: group label (Today, Monday, March…) + ISO date + time.
+    if snapshot_date_group(subvolume.created_at.as_ref())
+        .to_ascii_lowercase()
+        .contains(&q)
+    {
+        return true;
+    }
+    if let Some(dt) = subvolume.created_at {
+        let local: chrono::DateTime<Local> = DateTime::from(dt);
+        let formatted = local
+            .format("%Y-%m-%d %H:%M %B")
+            .to_string()
+            .to_ascii_lowercase();
+        if formatted.contains(&q) {
+            return true;
+        }
+    }
+    false
+}
+
+fn time_range_matches(subvolume: &Subvolume, time_range: &TimeRangeFilter) -> bool {
+    if *time_range == TimeRangeFilter::AllHistory {
+        return true;
+    }
+    let Some(dt) = subvolume.created_at else {
+        return false;
+    };
+    let local: chrono::DateTime<Local> = DateTime::from(dt);
+    let today = Local::now().date_naive();
+    let days_ago = (today - local.date_naive()).num_days();
+    match time_range {
+        TimeRangeFilter::Today => days_ago == 0,
+        TimeRangeFilter::Last7Days => days_ago < 7,
+        TimeRangeFilter::Last30Days => days_ago < 30,
+        TimeRangeFilter::AllHistory => true,
+    }
+}
+
+/// Returns "Today", "Yesterday", weekday name, or None for dates ≥7 days ago.
+fn relative_day_label(local: chrono::DateTime<Local>) -> Option<String> {
+    let today = Local::now().date_naive();
+    let date = local.date_naive();
+    let days_ago = (today - date).num_days();
+    if days_ago == 0 {
+        Some("Today".into())
+    } else if days_ago == 1 {
+        Some("Yesterday".into())
+    } else if days_ago < 7 {
+        Some(local.format("%A").to_string())
+    } else {
+        None
+    }
+}
+
+fn snapshot_hour_group(created_at: Option<&DateTime<Utc>>) -> String {
+    let Some(dt) = created_at else {
+        return "Unknown time".into();
+    };
+    let local: chrono::DateTime<Local> = DateTime::from(*dt);
+    let hour = local.hour();
+    let date_part = relative_day_label(local).unwrap_or_else(|| {
+        if local.date_naive().year() == Local::now().date_naive().year() {
+            local.format("%B %d").to_string()
+        } else {
+            local.format("%b %d, %Y").to_string()
+        }
+    });
+    format!("{date_part}  —  {:02}:00–{:02}:59", hour, hour)
+}
+
+fn snapshot_time_key(created_at: Option<&DateTime<Utc>>, view_mode: &ViewMode) -> (i64, String) {
+    let Some(dt) = created_at else {
+        return (i64::MAX, "Unknown date".into());
+    };
+    let local: chrono::DateTime<Local> = DateTime::from(*dt);
+    let naive = local.date_naive();
+    match view_mode {
+        ViewMode::ByDay => {
+            let ordinal = -(naive.num_days_from_ce() as i64);
+            let label = snapshot_date_group(Some(dt));
+            (ordinal, label)
+        }
+        ViewMode::ByHour => {
+            let days = naive.num_days_from_ce() as i64;
+            let hour = local.hour() as i64;
+            let ordinal = -(days * 24 + hour);
+            let label = snapshot_hour_group(Some(dt));
+            (ordinal, label)
+        }
+    }
 }
 
 fn clear_list(list: &gtk4::ListBox) {
@@ -642,14 +1118,50 @@ fn snapshot_date_group(created_at: Option<&DateTime<Utc>>) -> String {
         return "Unknown date".into();
     };
     let local: chrono::DateTime<Local> = DateTime::from(*dt);
-    let today = Local::now().date_naive();
-    let date = local.date_naive();
-    if date == today {
-        "Today".into()
-    } else if date == today.pred_opt().unwrap_or(today) {
-        "Yesterday".into()
+    relative_day_label(local).unwrap_or_else(|| {
+        // ≥7 days: show month (same year) or month+year
+        if local.date_naive().year() == Local::now().date_naive().year() {
+            local.format("%B").to_string()
+        } else {
+            local.format("%B %Y").to_string()
+        }
+    })
+}
+
+fn snapshot_display_title(snapshot: &Subvolume) -> String {
+    let name = snapshot
+        .path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("snapshot");
+    // "managed-<source>-YYYY-MM-DD_HH-MM-SS" → strip prefix + 20-char suffix.
+    let source = if let Some(rest) = name.strip_prefix("managed-") {
+        if rest.len() > 20 {
+            rest[..rest.len() - 20].trim_end_matches('-')
+        } else {
+            rest
+        }
+    } else if name.len() > 16 {
+        // Policy snapshots without "managed-": strip "-YYYYMMDD-HHMMSS" (16 chars).
+        let suffix = &name[name.len() - 16..];
+        if suffix.starts_with('-')
+            && suffix[1..9].bytes().all(|b| b.is_ascii_digit())
+            && suffix.as_bytes()[9] == b'-'
+            && suffix[10..].bytes().all(|b| b.is_ascii_digit())
+        {
+            name[..name.len() - 16].trim_end_matches('-')
+        } else {
+            name
+        }
     } else {
-        date.format("%B %d, %Y").to_string()
+        name
+    };
+    match snapshot.created_at {
+        Some(dt) => {
+            let local: chrono::DateTime<Local> = DateTime::from(dt);
+            format!("{} · {}", source, local.format("%H:%M"))
+        }
+        None => source.to_string(),
     }
 }
 
@@ -661,6 +1173,11 @@ fn render_inventory(
 ) {
     clear_list(list);
     if inventory.subvolumes.is_empty() {
+        state
+            .summary_scope
+            .set_label(&inventory.mountpoint.display().to_string());
+        state.summary_counts.set_label("Snapshots 0 · Subvolumes 0");
+        state.summary_filters.set_label("No subvolumes discovered");
         set_status_row(
             list,
             "No subvolumes found",
@@ -670,12 +1187,16 @@ fn render_inventory(
     }
 
     let active_filter = state.filter.borrow().clone();
+    let active_time_range = state.time_range.borrow().clone();
+    let active_view_mode = state.view_mode.borrow().clone();
 
     let all_snapshots: Vec<_> = inventory
         .subvolumes
         .iter()
         .filter(|s| is_snapshot_kind(&s.kind))
         .collect();
+    let managed_snapshot_count = all_snapshots.iter().filter(|s| s.managed).count();
+    let external_snapshot_count = all_snapshots.len().saturating_sub(managed_snapshot_count);
 
     let snapshots: Vec<_> = all_snapshots
         .iter()
@@ -685,6 +1206,7 @@ fn render_inventory(
             SnapshotFilter::Managed => s.managed,
             SnapshotFilter::External => !s.managed,
         })
+        .filter(|s| time_range_matches(s, &active_time_range))
         .filter(|s| matches_query(s, query))
         .collect();
 
@@ -694,15 +1216,36 @@ fn render_inventory(
         .filter(|s| !is_snapshot_kind(&s.kind))
         .filter(|s| matches_query(s, query))
         .collect();
+    update_inventory_summary(
+        &state,
+        inventory,
+        snapshots.len(),
+        all_snapshots.len(),
+        managed_snapshot_count,
+        external_snapshot_count,
+        subvolumes.len(),
+        query,
+    );
 
     if snapshots.is_empty() {
         append_section_header(list, "Snapshots (0)");
         let (empty_title, empty_sub) = if !query.is_empty() {
-            ("No snapshots match your search", "Try a different query or clear the search")
+            (
+                "No snapshots match your search",
+                "Try a different query or clear the search",
+            )
         } else if active_filter != SnapshotFilter::All {
             ("No snapshots in this category", "Try a different filter")
+        } else if active_time_range != TimeRangeFilter::AllHistory {
+            (
+                "No snapshots in this time range",
+                "Try a wider range or select All",
+            )
         } else {
-            ("No snapshots found", "Create or import snapshots to show them here")
+            (
+                "No snapshots found",
+                "Create or import snapshots to show them here",
+            )
         };
         append_info_row(list, empty_title, empty_sub);
     } else {
@@ -722,20 +1265,13 @@ fn render_inventory(
 
         if !managed.is_empty() {
             // Sort managed newest-first by created_at, then by path.
-            managed.sort_by(|a, b| {
-                b.created_at.cmp(&a.created_at).then(a.path.cmp(&b.path))
-            });
+            managed.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.path.cmp(&b.path)));
 
-            // Group managed by date (Today / Yesterday / date string).
-            let mut by_date: BTreeMap<(i32, String), Vec<&Subvolume>> = BTreeMap::new();
+            // Group managed by time key (day or hour depending on view mode).
+            let mut by_date: BTreeMap<(i64, String), Vec<&Subvolume>> = BTreeMap::new();
             for snap in &managed {
-                let local_date = snap.created_at.map(|dt| {
-                    let local: chrono::DateTime<Local> = DateTime::from(dt);
-                    local.date_naive()
-                });
-                // Key: (negative day ordinal for newest-first order, label)
-                let label = snapshot_date_group(snap.created_at.as_ref());
-                let ordinal = local_date.map(|d| -(d.num_days_from_ce())).unwrap_or(i32::MAX);
+                let (ordinal, label) =
+                    snapshot_time_key(snap.created_at.as_ref(), &active_view_mode);
                 by_date.entry((ordinal, label)).or_default().push(snap);
             }
 
@@ -748,10 +1284,21 @@ fn render_inventory(
             }
         }
 
-        for (label, group) in &by_tool {
-            append_section_header(list, &format!("{label} ({})", group.len()));
-            for snapshot in group {
-                render_snapshot_row(list, snapshot, &inventory.mountpoint, state.clone());
+        for (tool_label, group) in &by_tool {
+            let mut sorted: Vec<&Subvolume> = group.to_vec();
+            sorted.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.path.cmp(&b.path)));
+            let mut by_date: BTreeMap<(i64, String), Vec<&Subvolume>> = BTreeMap::new();
+            for snap in &sorted {
+                let (ordinal, date_label) =
+                    snapshot_time_key(snap.created_at.as_ref(), &active_view_mode);
+                by_date.entry((ordinal, date_label)).or_default().push(snap);
+            }
+            append_section_header(list, &format!("{tool_label} ({})", group.len()));
+            for ((_ord, date_label), snaps) in &by_date {
+                append_date_subheader(list, date_label);
+                for snap in snaps {
+                    render_snapshot_row(list, snap, &inventory.mountpoint, state.clone());
+                }
             }
         }
     }
@@ -763,6 +1310,13 @@ fn render_inventory(
             .title(subvolume.path.display().to_string())
             .subtitle(format!("ID {}", subvolume.id.0))
             .build();
+        row.add_prefix(
+            &gtk4::Image::builder()
+                .icon_name("folder-symbolic")
+                .pixel_size(20)
+                .valign(gtk4::Align::Center)
+                .build(),
+        );
 
         let snapshot_btn = gtk4::Button::builder()
             .icon_name("camera-photo-symbolic")
@@ -796,8 +1350,10 @@ fn render_inventory(
                 subvolume_for_policy.clone(),
             );
         });
-        row.add_suffix(&snapshot_btn);
-        row.add_suffix(&schedule);
+        let actions = linked_button_group();
+        actions.append(&snapshot_btn);
+        actions.append(&schedule);
+        row.add_suffix(&actions);
         list.append(&row);
     }
 }
@@ -810,14 +1366,24 @@ fn render_snapshot_row(
 ) {
     let mountpoint = mountpoint.to_path_buf();
     let mountpoint_for_delete = mountpoint.clone();
+    let mount_for_rb_pre = mountpoint.clone();
     let relative_path = snapshot.path.clone();
     let target = browse_mount_target(&relative_path);
     let is_mounted = state.mounted_snapshots.borrow().contains(&target);
-    let subtitle = snapshot_subtitle_full(snapshot.id.0, is_mounted, &target, &snapshot.tags);
+    let snapshot_id = snapshot.id.0;
+    let subtitle = snapshot_subtitle(
+        snapshot_id,
+        &snapshot.path,
+        snapshot.unlocked,
+        is_mounted,
+        &target,
+        &snapshot.tags,
+    );
     let row = libadwaita::ActionRow::builder()
-        .title(snapshot.path.display().to_string())
+        .title(snapshot_display_title(snapshot))
         .subtitle(subtitle)
         .build();
+    row.add_prefix(&snapshot_prefix_icon(snapshot, is_mounted));
     let browse = gtk4::Button::builder()
         .icon_name("folder-open-symbolic")
         .tooltip_text("Browse read-only")
@@ -835,10 +1401,12 @@ fn render_snapshot_row(
     let browse_for_browse = browse.clone();
     let unmount_for_browse = unmount.clone();
     let state_for_browse = state.clone();
-    let snapshot_id = snapshot.id.0;
     let tags_for_browse = snapshot.tags.clone();
     let tags_for_unmount = snapshot.tags.clone();
     let is_unlocked_for_browse = snapshot.unlocked;
+    let snap_path_for_browse = snapshot.path.clone();
+    let snap_path_for_unmount = snapshot.path.clone();
+    let unlocked_for_unmount = snapshot.unlocked;
     browse.connect_clicked(move |_| {
         let mountpoint = mountpoint.clone();
         let relative_path = relative_path.clone();
@@ -847,25 +1415,43 @@ fn render_snapshot_row(
         let unmount_btn = unmount_for_browse.clone();
         let state = state_for_browse.clone();
         let tags = tags_for_browse.clone();
+        let snap_path = snap_path_for_browse.clone();
         state.spinner.start();
         glib::MainContext::default().spawn_local(async move {
             let result = gio::spawn_blocking(move || {
                 browse_snapshot_readonly(mountpoint, relative_path, is_unlocked_for_browse)
-            }).await
+            })
+            .await
             .map_err(|_| anyhow::anyhow!("browse thread panicked"))
             .and_then(|r| r);
             state.spinner.stop();
             match result {
                 Ok(mounted) => {
-                    state.mounted_snapshots.borrow_mut().insert(mounted.target.clone());
-                    state.session_mounts.borrow_mut().extend(mounted.created_mounts.iter().cloned());
-                    row.set_subtitle(&snapshot_subtitle_full(snapshot_id, true, &mounted.target, &tags));
+                    state
+                        .mounted_snapshots
+                        .borrow_mut()
+                        .insert(mounted.target.clone());
+                    state
+                        .session_mounts
+                        .borrow_mut()
+                        .extend(mounted.created_mounts.iter().cloned());
+                    row.set_subtitle(&snapshot_subtitle(
+                        snapshot_id,
+                        &snap_path,
+                        is_unlocked_for_browse,
+                        true,
+                        &mounted.target,
+                        &tags,
+                    ));
                     browse_btn.set_sensitive(false);
                     unmount_btn.set_sensitive(true);
                     let msg = mounted.warning.as_deref().unwrap_or("Snapshot mounted");
                     show_toast(&state.toast_overlay, msg);
                 }
-                Err(err) => show_toast(&state.toast_overlay, &format!("Failed to browse snapshot: {err}")),
+                Err(err) => show_toast(
+                    &state.toast_overlay,
+                    &format!("Failed to browse snapshot: {err}"),
+                ),
             }
         });
     });
@@ -882,11 +1468,23 @@ fn render_snapshot_row(
         let unmount_btn = unmount_for_unmount.clone();
         let state = state_for_unmount.clone();
         let tags = tags_for_unmount.clone();
+        let snap_path = snap_path_for_unmount.clone();
         glib::MainContext::default().spawn_local(async move {
-            match handle_privileged_async(HelperRequest::UnmountSnapshot { target: target.clone() }).await {
+            match handle_privileged_async(HelperRequest::UnmountSnapshot {
+                target: target.clone(),
+            })
+            .await
+            {
                 Ok(_) => {
                     state.mounted_snapshots.borrow_mut().remove(&target);
-                    row.set_subtitle(&snapshot_subtitle_full(snapshot_id, false, &target, &tags));
+                    row.set_subtitle(&snapshot_subtitle(
+                        snapshot_id,
+                        &snap_path,
+                        unlocked_for_unmount,
+                        false,
+                        &target,
+                        &tags,
+                    ));
                     browse_btn.set_sensitive(true);
                     unmount_btn.set_sensitive(false);
                     show_toast(&state.toast_overlay, "Snapshot unmounted");
@@ -899,11 +1497,14 @@ fn render_snapshot_row(
         });
     });
 
-    row.add_suffix(&browse);
-    row.add_suffix(&unmount);
+    let browse_actions = linked_button_group();
+    browse_actions.append(&browse);
+    browse_actions.append(&unmount);
+    row.add_suffix(&browse_actions);
 
     if snapshot.managed {
         let is_unlocked = snapshot.unlocked;
+        let managed_actions = linked_button_group();
         // Unlock button — only shown when snapshot is read-only
         let unlock_btn = gtk4::Button::builder()
             .icon_name("changes-allow-symbolic")
@@ -989,7 +1590,12 @@ fn render_snapshot_row(
                     unlock_c2.set_visible(true);
                     row_for_lock.remove_css_class("warning");
                     show_toast(&state_for_lock.toast_overlay, "Snapshot locked");
-                    load_mountpoint(list_for_lock.clone(), state_for_lock.clone(), String::new(), mount_for_lock.clone());
+                    load_mountpoint(
+                        list_for_lock.clone(),
+                        state_for_lock.clone(),
+                        String::new(),
+                        mount_for_lock.clone(),
+                    );
                 }
                 Err(err) => show_toast(
                     &state_for_lock.toast_overlay,
@@ -998,15 +1604,12 @@ fn render_snapshot_row(
             }
         });
 
-        row.add_suffix(&unlock_btn);
-        row.add_suffix(&lock_btn);
+        managed_actions.append(&unlock_btn);
+        managed_actions.append(&lock_btn);
         // Visual indicator for unlocked state
         if is_unlocked {
             row.add_css_class("warning");
         }
-    }
-
-    if snapshot.managed {
         let delete = gtk4::Button::builder()
             .icon_name("user-trash-symbolic")
             .tooltip_text("Delete managed snapshot")
@@ -1055,7 +1658,62 @@ fn render_snapshot_row(
             let window = btn.root().and_downcast::<gtk4::Window>();
             dialog.present(window.as_ref());
         });
-        row.add_suffix(&delete);
+        managed_actions.append(&delete);
+
+        // Rollback button — stages a reversible rollback to this snapshot.
+        let rollback_btn = gtk4::Button::builder()
+            .icon_name("system-reboot-symbolic")
+            .tooltip_text("Stage rollback to this snapshot")
+            .valign(gtk4::Align::Center)
+            .build();
+        let state_for_rb = state.clone();
+        let path_for_rb = snapshot.path.clone();
+        let mount_for_rb = mount_for_rb_pre;
+        rollback_btn.connect_clicked(move |btn| {
+            let window = btn.root().and_downcast::<gtk4::Window>();
+            let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+            let snap_name = path_for_rb
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("snap");
+            let anchor = PathBuf::from(format!("@btrfs-manager/return-{timestamp}"));
+            let dialog = libadwaita::AlertDialog::builder()
+                .heading("Restaurar este snapshot?")
+                .body(format!(
+                    "Restaurar {}?\n\nEste processo irá:\n• Salvar o root atual como âncora de retorno\n• Substituir o subvolume root pelo conteúdo deste snapshot\n\nO sistema permanece intacto até o próximo reboot. O rollback pode ser revertido a qualquer momento (antes ou depois de reiniciar).",
+                    snap_name
+                ))
+                .build();
+            dialog.add_response("cancel", "Cancelar");
+            dialog.add_response("rollback", "Restaurar e reiniciar");
+            dialog.set_response_appearance("rollback", libadwaita::ResponseAppearance::Destructive);
+            dialog.set_default_response(Some("cancel"));
+            let state_c = state_for_rb.clone();
+            let mount_c = mount_for_rb.clone();
+            let path_c = path_for_rb.clone();
+            dialog.connect_response(None, move |_, response| {
+                if response != "rollback" {
+                    return;
+                }
+                match handle_privileged(HelperRequest::StageRollback {
+                    mountpoint: mount_c.clone(),
+                    snapshot_path: path_c.clone(),
+                    return_snapshot_path: anchor.clone(),
+                }) {
+                    Ok(_) => show_toast(
+                        &state_c.toast_overlay,
+                        "Rollback staged — reinicie para ativar. O app oferecerá opção de revert no próximo início.",
+                    ),
+                    Err(err) => show_toast(
+                        &state_c.toast_overlay,
+                        &format!("Falha ao fazer staging do rollback: {err}"),
+                    ),
+                }
+            });
+            dialog.present(window.as_ref());
+        });
+        managed_actions.append(&rollback_btn);
+        row.add_suffix(&managed_actions);
     }
 
     list.append(&row);
@@ -1182,6 +1840,17 @@ fn invalidate_policy_preview(
     run.set_sensitive(false);
 }
 
+fn dialog_content_box() -> gtk4::Box {
+    gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
+        .spacing(12)
+        .margin_top(16)
+        .margin_bottom(16)
+        .margin_start(16)
+        .margin_end(16)
+        .build()
+}
+
 fn open_create_snapshot_dialog(
     state: UiState,
     list: gtk4::ListBox,
@@ -1194,14 +1863,7 @@ fn open_create_snapshot_dialog(
         .modal(true)
         .build();
 
-    let content = gtk4::Box::builder()
-        .orientation(gtk4::Orientation::Vertical)
-        .spacing(12)
-        .margin_top(16)
-        .margin_bottom(16)
-        .margin_start(16)
-        .margin_end(16)
-        .build();
+    let content = dialog_content_box();
 
     let header = libadwaita::HeaderBar::new();
     let root_box = gtk4::Box::builder()
@@ -1278,7 +1940,12 @@ fn open_create_snapshot_dialog(
             Ok(_) => {
                 window_for_create.close();
                 show_toast(&state.toast_overlay, "Snapshot created");
-                load_mountpoint(list.clone(), state.clone(), String::new(), mountpoint.clone());
+                load_mountpoint(
+                    list.clone(),
+                    state.clone(),
+                    String::new(),
+                    mountpoint.clone(),
+                );
             }
             Err(err) => show_toast(
                 &state.toast_overlay,
@@ -1306,14 +1973,7 @@ fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume)
         .default_height(620)
         .modal(true)
         .build();
-    let content = gtk4::Box::builder()
-        .orientation(gtk4::Orientation::Vertical)
-        .spacing(12)
-        .margin_top(16)
-        .margin_bottom(16)
-        .margin_start(16)
-        .margin_end(16)
-        .build();
+    let content = dialog_content_box();
 
     let title = gtk4::Label::builder()
         .label(format!("Policy for {}", subvolume.path.display()))
@@ -1568,7 +2228,10 @@ fn open_in_filemanager(path: &std::path::Path, as_root: bool) -> anyhow::Result<
         let display = std::env::var("DISPLAY").unwrap_or_default();
         let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
         let xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
-        tracing::debug!("requesting root file manager via helper: {}", path.display());
+        tracing::debug!(
+            "requesting root file manager via helper: {}",
+            path.display()
+        );
         handle_privileged(HelperRequest::OpenFileManager {
             path: path.to_path_buf(),
             display,

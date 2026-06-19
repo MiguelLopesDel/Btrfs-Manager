@@ -13,4 +13,4 @@ pub use models::{
 };
 pub use parser::{ParseError, parse_btrfs_subvolume_list, parse_findmnt_pairs};
 pub use retention::{RetentionClass, RetentionPolicy, retention_keep_set};
-pub use rollback::{RollbackPlan, RollbackStatus};
+pub use rollback::{RollbackPlan, RollbackPrompt, RollbackStatus};

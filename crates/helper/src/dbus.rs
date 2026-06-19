@@ -1,7 +1,7 @@
 use crate::{Helper, HelperRequest, SystemCommandRunner};
 use std::process::Command;
-use zbus::{Connection, fdo, interface, message::Header};
 use tracing;
+use zbus::{Connection, fdo, interface, message::Header};
 
 pub const SERVICE_NAME: &str = "org.btrfsmanager.Helper";
 pub const OBJECT_PATH: &str = "/org/btrfsmanager/Helper";
@@ -92,12 +92,13 @@ impl HelperService {
         tracing::info!(uid, action, "handling request");
         // Helper::handle() executes btrfs/mount/systemctl — blocking calls that
         // must not run on the async executor.
-        let result =
-            tokio::task::spawn_blocking(move || {
-                Helper::new(SystemCommandRunner).with_caller_uid(uid).handle(request)
-            })
-                .await
-                .map_err(|e| fdo::Error::Failed(e.to_string()))?;
+        let result = tokio::task::spawn_blocking(move || {
+            Helper::new(SystemCommandRunner)
+                .with_caller_uid(uid)
+                .handle(request)
+        })
+        .await
+        .map_err(|e| fdo::Error::Failed(e.to_string()))?;
         match result {
             Ok(response) => {
                 tracing::debug!(uid, action, "request completed: {}", response.message);
@@ -134,7 +135,10 @@ pub fn action_for_request(request: &HelperRequest) -> &'static str {
         HelperRequest::ListManagedSnapshots => ACTION_POLICY_READ,
         HelperRequest::SetManagedSnapshotReadOnly { .. } => ACTION_SNAPSHOT_READONLY,
         HelperRequest::DeleteManagedSnapshot { .. } => ACTION_SNAPSHOT_DELETE,
-        HelperRequest::StageRollback { .. } => ACTION_ROLLBACK,
+        HelperRequest::StageRollback { .. }
+        | HelperRequest::CommitRollback { .. }
+        | HelperRequest::RevertRollback { .. } => ACTION_ROLLBACK,
+        HelperRequest::GetPendingRollback => ACTION_DISCOVERY,
         HelperRequest::OpenFileManager { .. } => ACTION_MOUNT,
         HelperRequest::ListSnapshotPolicies
         | HelperRequest::PreviewRetention { .. }
@@ -204,9 +208,9 @@ mod tests {
         );
         assert_eq!(
             action_for_request(&HelperRequest::StageRollback {
-                snapshot: PathBuf::from("/a"),
-                prepared_subvolume: PathBuf::from("/b"),
-                return_snapshot: PathBuf::from("/c"),
+                mountpoint: PathBuf::from("/"),
+                snapshot_path: PathBuf::from("@snapshots/snap"),
+                return_snapshot_path: PathBuf::from("@btrfs-manager/return"),
             }),
             ACTION_ROLLBACK
         );

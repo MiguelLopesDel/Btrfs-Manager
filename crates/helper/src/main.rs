@@ -61,6 +61,18 @@ enum Commands {
         #[arg(long)]
         json: String,
     },
+    StageRollback {
+        mountpoint: PathBuf,
+        snapshot_path: PathBuf,
+        return_snapshot_path: PathBuf,
+    },
+    GetPendingRollback,
+    CommitRollback {
+        plan_id: uuid::Uuid,
+    },
+    RevertRollback {
+        plan_id: uuid::Uuid,
+    },
     RunRetentionPolicy {
         #[arg(long, alias = "policy")]
         policy_id: uuid::Uuid,
@@ -113,9 +125,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::MountSnapshot { source, target } => {
             HelperRequest::MountSnapshot { source, target }
         }
-        Commands::MountTopLevel { mountpoint } => {
-            HelperRequest::MountTopLevel { mountpoint }
-        }
+        Commands::MountTopLevel { mountpoint } => HelperRequest::MountTopLevel { mountpoint },
         Commands::UnmountSnapshot { target } => HelperRequest::UnmountSnapshot { target },
         Commands::CleanupManagedMounts => HelperRequest::CleanupManagedMounts,
         Commands::ListSnapshotPolicies => HelperRequest::ListSnapshotPolicies,
@@ -132,6 +142,18 @@ async fn main() -> anyhow::Result<()> {
         Commands::PreviewRetentionForPolicy { json } => HelperRequest::PreviewRetentionForPolicy {
             policy: serde_json::from_str(&json)?,
         },
+        Commands::StageRollback {
+            mountpoint,
+            snapshot_path,
+            return_snapshot_path,
+        } => HelperRequest::StageRollback {
+            mountpoint,
+            snapshot_path,
+            return_snapshot_path,
+        },
+        Commands::GetPendingRollback => HelperRequest::GetPendingRollback,
+        Commands::CommitRollback { plan_id } => HelperRequest::CommitRollback { plan_id },
+        Commands::RevertRollback { plan_id } => HelperRequest::RevertRollback { plan_id },
         Commands::RunRetentionPolicy { policy_id } => {
             HelperRequest::RunRetentionPolicy { policy_id }
         }
