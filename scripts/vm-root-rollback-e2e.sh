@@ -7,6 +7,8 @@ HELPER="$ROOT/target/debug/btrfs-manager-helper"
 TOP_MOUNT="${BTRFS_MANAGER_E2E_TOP_MOUNT:-/run/btrfs-manager-root-rollback-e2e/top}"
 STATE_REL="@btrfs-manager/e2e-state/root-rollback-e2e.env"
 MARKER="/etc/btrfs-manager-root-rollback-e2e-marker"
+DISPOSABLE_VM_MARKER="/etc/btrfs-manager-disposable-vm"
+DISPOSABLE_VM_MARKER_VALUE="BTRFS_MANAGER_DISPOSABLE_VM=1"
 UNIT="btrfs-manager-root-rollback-e2e.service"
 UNIT_PATH="/etc/systemd/system/$UNIT"
 
@@ -31,6 +33,8 @@ reboots again to validate the return anchor.
 
 Safety:
   - Refuses to run outside a detected VM unless BTRFS_MANAGER_E2E_ALLOW_HOST=1.
+  - Always requires $DISPOSABLE_VM_MARKER with exact content:
+      $DISPOSABLE_VM_MARKER_VALUE
   - Requires --yes for the initial start.
   - Stores its state outside the root subvolume under $STATE_REL.
 EOF
@@ -57,6 +61,7 @@ require_command() {
 }
 
 require_vm_safety() {
+  require_disposable_vm_marker
   if [ "${BTRFS_MANAGER_E2E_ALLOW_HOST:-0}" = "1" ]; then
     return
   fi
@@ -64,6 +69,17 @@ require_vm_safety() {
     return
   fi
   fail "refusing to run root rollback E2E outside a detected VM; set BTRFS_MANAGER_E2E_ALLOW_HOST=1 only if you really know this host is disposable"
+}
+
+require_disposable_vm_marker() {
+  if [ ! -f "$DISPOSABLE_VM_MARKER" ]; then
+    fail "missing disposable VM marker: create it only inside the throwaway VM with: printf '%s\n' '$DISPOSABLE_VM_MARKER_VALUE' | sudo tee '$DISPOSABLE_VM_MARKER'"
+  fi
+  local marker_value
+  marker_value="$(head -n 1 "$DISPOSABLE_VM_MARKER")"
+  if [ "$marker_value" != "$DISPOSABLE_VM_MARKER_VALUE" ]; then
+    fail "$DISPOSABLE_VM_MARKER has unexpected content; expected exactly: $DISPOSABLE_VM_MARKER_VALUE"
+  fi
 }
 
 require_root_btrfs() {
@@ -289,6 +305,7 @@ fi
 case "$MODE" in
   start) start_phase ;;
   resume)
+    require_vm_safety
     load_state
     case "${PHASE:-}" in
       verify_rollback) verify_rollback_phase ;;

@@ -34,6 +34,7 @@ It stages rollback for the currently booted root, reboots, verifies the booted
 rollback prompt state, reverts to the return anchor, and reboots again:
 
 ```sh
+printf '%s\n' 'BTRFS_MANAGER_DISPOSABLE_VM=1' | sudo tee /etc/btrfs-manager-disposable-vm
 bash scripts/vm-root-rollback-e2e.sh --yes
 ```
 
