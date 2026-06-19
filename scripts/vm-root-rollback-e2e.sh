@@ -126,6 +126,20 @@ mount_top_level() {
   if ! mountpoint -q "$TOP_MOUNT"; then
     mount -o subvolid=5 "$(root_source_device)" "$TOP_MOUNT"
   fi
+}
+
+manager_subvolume_path() {
+  printf '%s/@btrfs-manager\n' "$TOP_MOUNT"
+}
+
+ensure_manager_subvolume() {
+  local manager
+  manager="$(manager_subvolume_path)"
+  if [ ! -e "$manager" ]; then
+    btrfs subvolume create "$manager" >/dev/null
+  elif ! btrfs subvolume show "$manager" >/dev/null 2>&1; then
+    fail "$manager exists but is not a Btrfs subvolume. If this came from a failed E2E run, remove the empty directory from the top-level mount and retry."
+  fi
   mkdir -p "$TOP_MOUNT/@btrfs-manager/e2e-state"
 }
 
@@ -148,6 +162,7 @@ EOF
 
 load_state() {
   mount_top_level
+  ensure_manager_subvolume
   local file
   file="$(state_file)"
   [ -f "$file" ] || fail "state file not found: $file"
@@ -202,6 +217,11 @@ cleanup_failed_start() {
   rm -f "$MARKER"
   if mountpoint -q "$TOP_MOUNT"; then
     rm -f "$(state_file)"
+    rmdir "$TOP_MOUNT/@btrfs-manager/e2e-state" 2>/dev/null || true
+    if [ -d "$TOP_MOUNT/@btrfs-manager" ] \
+      && ! btrfs subvolume show "$TOP_MOUNT/@btrfs-manager" >/dev/null 2>&1; then
+      rmdir "$TOP_MOUNT/@btrfs-manager" 2>/dev/null || true
+    fi
   fi
   remove_resume_unit
 }
@@ -211,6 +231,7 @@ start_phase() {
   require_vm_safety
   require_root_btrfs
   mount_top_level
+  ensure_manager_subvolume
 
   RUN_ID="$(date +%Y%m%d-%H%M%S)"
   TARGET_PATH="@btrfs-manager/e2e-target-$RUN_ID"
