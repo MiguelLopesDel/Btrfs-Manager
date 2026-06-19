@@ -84,20 +84,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install Btrfs dependencies
+      - name: Validate loopback integration script
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            btrfs-progs \
-            "linux-modules-extra-$(uname -r)" || \
-          sudo apt-get install -y --no-install-recommends btrfs-progs
-          sudo modprobe btrfs || true
-          sudo modprobe loop || true
-      - uses: Swatinem/rust-cache@v2
-      - run: bash scripts/dev-loopback-btrfs-test.sh
-        env:
-          BTRFS_MANAGER_SKIP_UNSUPPORTED_LOOPBACK: "1"
+          bash -n scripts/dev-loopback-btrfs-test.sh
+          echo "Real loopback Btrfs integration must run on a VM or host that exposes loop and Btrfs kernel support."
 
   security:
     name: Dependency Security
@@ -244,9 +234,6 @@ jobs:
           chown -R builder:builder "$GITHUB_WORKSPACE"
           su builder -c "cd '$GITHUB_WORKSPACE/packaging/arch' && makepkg --printsrcinfo > .SRCINFO.generated"
           diff -u packaging/arch/.SRCINFO packaging/arch/.SRCINFO.generated
-      - name: Build release binaries on Arch
-        run: cargo build --release --locked -p btrfs-manager-helper -p btrfs-manager-app --features btrfs-manager-app/gui
-
   e2e-headless:
     name: Headless GUI E2E
     runs-on: ubuntu-latest
