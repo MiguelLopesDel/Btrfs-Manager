@@ -29,6 +29,14 @@ The privileged Btrfs integration test needs `btrfs-progs` and mount permission:
 bash scripts/dev-loopback-btrfs-test.sh
 ```
 
+The destructive root rollback E2E must run only inside a disposable Btrfs VM.
+It stages rollback for the currently booted root, reboots, verifies the booted
+rollback prompt state, reverts to the return anchor, and reboots again:
+
+```sh
+bash scripts/vm-root-rollback-e2e.sh --yes
+```
+
 ## Blocking quality gates
 
 The required GitHub checks are:

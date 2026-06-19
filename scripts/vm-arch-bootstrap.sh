@@ -17,6 +17,7 @@ sudo pacman -Syu --needed \
   rust \
   cargo \
   pkgconf \
+  jq \
   btrfs-progs \
   gtk4 \
   libadwaita \
