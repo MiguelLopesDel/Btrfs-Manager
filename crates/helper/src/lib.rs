@@ -3357,7 +3357,7 @@ mod tests {
                 .list_all_managed_snapshots()
                 .unwrap()
                 .into_iter()
-                .find(|snapshot| snapshot.path == PathBuf::from("@btrfs-manager/return-root"))
+                .find(|snapshot| snapshot.path == Path::new("@btrfs-manager/return-root"))
                 .expect("rollback anchor should be stored");
             assert!(matches!(anchor.state, SnapshotState::RollbackAnchor));
             assert!(

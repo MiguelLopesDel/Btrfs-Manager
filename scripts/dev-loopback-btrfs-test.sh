@@ -10,6 +10,8 @@ HELPER="target/debug/btrfs-manager-helper"
 TOPLEVEL_MOUNT="${BTRFS_MANAGER_TOPLEVEL_MOUNT:-/tmp/btrfs-manager-test-top-level}"
 TOPLEVEL_BROWSE="${BTRFS_MANAGER_TOPLEVEL_BROWSE:-/tmp/btrfs-manager-test-top-level-browse}"
 MKFS_BTRFS="${MKFS_BTRFS:-}"
+LOOP_DEVICE=""
+MOUNT_SOURCE="$IMAGE"
 
 cleanup() {
   set +e
@@ -24,6 +26,9 @@ cleanup() {
   fi
   if mountpoint -q "$MOUNTPOINT"; then
     sudo umount "$MOUNTPOINT"
+  fi
+  if [ -n "$LOOP_DEVICE" ]; then
+    sudo losetup -d "$LOOP_DEVICE" 2>/dev/null || true
   fi
   true
 }
@@ -69,7 +74,15 @@ truncate -s "$IMAGE_SIZE" "$IMAGE"
 
 echo "==> Mounting image"
 sudo mkdir -p "$MOUNTPOINT"
-sudo mount -o loop "$IMAGE" "$MOUNTPOINT" || fail "failed to mount loopback image. The container may not expose loop devices."
+sudo modprobe loop 2>/dev/null || true
+if LOOP_DEVICE="$(sudo losetup --find --show "$IMAGE" 2>/dev/null)"; then
+  MOUNT_SOURCE="$LOOP_DEVICE"
+  sudo mount "$MOUNT_SOURCE" "$MOUNTPOINT" || fail "failed to mount loopback device $MOUNT_SOURCE"
+else
+  LOOP_DEVICE=""
+  MOUNT_SOURCE="$IMAGE"
+  sudo mount -o loop "$IMAGE" "$MOUNTPOINT" || fail "failed to mount loopback image. The container or runner may not expose loop devices."
+fi
 mountpoint -q "$MOUNTPOINT" || fail "loopback mountpoint is not mounted after mount command"
 sudo chown "$(id -u):$(id -g)" "$MOUNTPOINT"
 
@@ -166,7 +179,11 @@ AT_KIND=$(echo "$FULL_INV" | jq -r '.data.subvolumes[] | select(.path == "@") | 
 [ "$AT_KIND" = "Normal" ] || fail "@ should be Normal, got: '${AT_KIND}'"
 
 sudo umount "$MOUNTPOINT"
-sudo mount -o loop,subvol=@ "$IMAGE" "$MOUNTPOINT"
+if [ -n "$LOOP_DEVICE" ]; then
+  sudo mount -o subvol=@ "$MOUNT_SOURCE" "$MOUNTPOINT"
+else
+  sudo mount -o loop,subvol=@ "$IMAGE" "$MOUNTPOINT"
+fi
 
 if [ -e "$MOUNTPOINT/@snapshots/296/snapshot" ]; then
   fail "test setup is invalid: snapshot should not be directly visible from subvol=@ mount"
