@@ -245,8 +245,7 @@ jobs:
           su builder -c "cd '$GITHUB_WORKSPACE/packaging/arch' && makepkg --printsrcinfo > .SRCINFO.generated"
           diff -u packaging/arch/.SRCINFO packaging/arch/.SRCINFO.generated
       - name: Build release binaries on Arch
-        run: |
-          su builder -c "cd '$GITHUB_WORKSPACE' && cargo build --release --locked -p btrfs-manager-helper -p btrfs-manager-app --features btrfs-manager-app/gui"
+        run: cargo build --release --locked -p btrfs-manager-helper -p btrfs-manager-app --features btrfs-manager-app/gui
 
   e2e-headless:
     name: Headless GUI E2E
