@@ -88,7 +88,12 @@ jobs:
       - name: Install Btrfs dependencies
         run: |
           sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            btrfs-progs \
+            "linux-modules-extra-$(uname -r)" || \
           sudo apt-get install -y --no-install-recommends btrfs-progs
+          sudo modprobe btrfs || true
+          sudo modprobe loop || true
       - uses: Swatinem/rust-cache@v2
       - run: bash scripts/dev-loopback-btrfs-test.sh
 
@@ -209,6 +214,8 @@ jobs:
     container: archlinux:base-devel
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Install package validators
         run: |
           pacman -Syu --noconfirm --needed \
@@ -237,10 +244,11 @@ jobs:
           diff -u packaging/arch/.SRCINFO packaging/arch/.SRCINFO.generated
       - name: Build AUR package
         run: |
+          git branch -f main "$GITHUB_SHA"
           cp -a packaging/arch /tmp/btrfs-manager-aur
           sed -i "s#git+https://github.com/MiguelLopesDel/Btrfs-Manager.git#git+file://$GITHUB_WORKSPACE#" /tmp/btrfs-manager-aur/PKGBUILD
           chown -R builder:builder /tmp/btrfs-manager-aur
-          su builder -c "cd /tmp/btrfs-manager-aur && makepkg --nodeps --noarchive --noconfirm"
+          su builder -c "cd /tmp/btrfs-manager-aur && GIT_ALLOW_PROTOCOL=file:git:https:ssh makepkg --nodeps --noarchive --noconfirm"
 
   e2e-headless:
     name: Headless GUI E2E

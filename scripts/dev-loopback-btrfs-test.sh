@@ -74,6 +74,7 @@ truncate -s "$IMAGE_SIZE" "$IMAGE"
 
 echo "==> Mounting image"
 sudo mkdir -p "$MOUNTPOINT"
+sudo modprobe btrfs 2>/dev/null || true
 sudo modprobe loop 2>/dev/null || true
 if LOOP_DEVICE="$(sudo losetup --find --show "$IMAGE" 2>/dev/null)"; then
   MOUNT_SOURCE="$LOOP_DEVICE"
