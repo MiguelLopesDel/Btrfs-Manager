@@ -12,6 +12,7 @@ TOPLEVEL_BROWSE="${BTRFS_MANAGER_TOPLEVEL_BROWSE:-/tmp/btrfs-manager-test-top-le
 MKFS_BTRFS="${MKFS_BTRFS:-}"
 LOOP_DEVICE=""
 MOUNT_SOURCE="$IMAGE"
+SKIP_UNSUPPORTED_LOOPBACK="${BTRFS_MANAGER_SKIP_UNSUPPORTED_LOOPBACK:-0}"
 
 cleanup() {
   set +e
@@ -36,6 +37,14 @@ cleanup() {
 fail() {
   echo "error: $*" >&2
   exit 1
+}
+
+skip_unsupported_loopback() {
+  if [ "$SKIP_UNSUPPORTED_LOOPBACK" = "1" ]; then
+    echo "warning: skipping loopback Btrfs integration test: $*" >&2
+    exit 0
+  fi
+  fail "$@"
 }
 
 trap cleanup EXIT
@@ -78,11 +87,11 @@ sudo modprobe btrfs 2>/dev/null || true
 sudo modprobe loop 2>/dev/null || true
 if LOOP_DEVICE="$(sudo losetup --find --show "$IMAGE" 2>/dev/null)"; then
   MOUNT_SOURCE="$LOOP_DEVICE"
-  sudo mount "$MOUNT_SOURCE" "$MOUNTPOINT" || fail "failed to mount loopback device $MOUNT_SOURCE"
+  sudo mount "$MOUNT_SOURCE" "$MOUNTPOINT" || skip_unsupported_loopback "failed to mount loopback device $MOUNT_SOURCE"
 else
   LOOP_DEVICE=""
   MOUNT_SOURCE="$IMAGE"
-  sudo mount -o loop "$IMAGE" "$MOUNTPOINT" || fail "failed to mount loopback image. The container or runner may not expose loop devices."
+  sudo mount -o loop "$IMAGE" "$MOUNTPOINT" || skip_unsupported_loopback "failed to mount loopback image. The container or runner may not expose loop devices."
 fi
 mountpoint -q "$MOUNTPOINT" || fail "loopback mountpoint is not mounted after mount command"
 sudo chown "$(id -u):$(id -g)" "$MOUNTPOINT"

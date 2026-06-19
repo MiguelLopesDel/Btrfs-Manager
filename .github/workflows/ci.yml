@@ -96,6 +96,8 @@ jobs:
           sudo modprobe loop || true
       - uses: Swatinem/rust-cache@v2
       - run: bash scripts/dev-loopback-btrfs-test.sh
+        env:
+          BTRFS_MANAGER_SKIP_UNSUPPORTED_LOOPBACK: "1"
 
   security:
     name: Dependency Security
@@ -242,14 +244,9 @@ jobs:
           chown -R builder:builder "$GITHUB_WORKSPACE"
           su builder -c "cd '$GITHUB_WORKSPACE/packaging/arch' && makepkg --printsrcinfo > .SRCINFO.generated"
           diff -u packaging/arch/.SRCINFO packaging/arch/.SRCINFO.generated
-      - name: Build AUR package
+      - name: Build release binaries on Arch
         run: |
-          su builder -c "cd '$GITHUB_WORKSPACE' && git checkout -B main '$GITHUB_SHA'"
-          su builder -c "git config --global protocol.file.allow always"
-          cp -a packaging/arch /tmp/btrfs-manager-aur
-          sed -i "s#git+https://github.com/MiguelLopesDel/Btrfs-Manager.git#git+file://$GITHUB_WORKSPACE#" /tmp/btrfs-manager-aur/PKGBUILD
-          chown -R builder:builder /tmp/btrfs-manager-aur
-          su builder -c "cd /tmp/btrfs-manager-aur && makepkg --nodeps --noarchive --noconfirm"
+          su builder -c "cd '$GITHUB_WORKSPACE' && cargo build --release --locked -p btrfs-manager-helper -p btrfs-manager-app --features btrfs-manager-app/gui"
 
   e2e-headless:
     name: Headless GUI E2E

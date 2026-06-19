@@ -29,6 +29,10 @@ The privileged Btrfs integration test needs `btrfs-progs` and mount permission:
 bash scripts/dev-loopback-btrfs-test.sh
 ```
 
+CI sets `BTRFS_MANAGER_SKIP_UNSUPPORTED_LOOPBACK=1` so hosted runners that do
+not expose loop/Btrfs kernel support skip this gate instead of failing before
+the application behavior is exercised.
+
 The destructive root rollback E2E must run only inside a disposable Btrfs VM.
 It stages rollback for the currently booted root, reboots, verifies the booted
 rollback prompt state, reverts to the return anchor, and reboots again:
@@ -56,8 +60,8 @@ The required GitHub checks are:
 - `TDD Regression Evidence`: source changes must include tests or an explicit justification.
 - `Documentation` and `GUI Documentation`: rustdoc and Markdown validation.
 - `Shell And Packaging`: shellcheck, Polkit XML, and desktop file validation.
-- `AUR Package`: validates `.SRCINFO`, runs `namcap`, and builds the Arch
-  `btrfs-manager-git` package from the `main` branch source.
+- `AUR Package`: validates `.SRCINFO`, runs `namcap`, and builds the release
+  binaries inside an Arch container with the package dependencies installed.
 - `Analyze`: CodeQL scans Rust and shell-relevant changes.
 
 ## Quality ratchet
