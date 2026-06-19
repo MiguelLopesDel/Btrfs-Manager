@@ -146,6 +146,14 @@ impl StateStore {
         Ok(())
     }
 
+    pub(crate) fn delete_policy(&self, policy_id: Uuid) -> Result<(), HelperError> {
+        self.connection.execute(
+            "DELETE FROM snapshot_policies WHERE id = ?1",
+            params![policy_id.to_string()],
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn insert_managed_snapshot(
         &self,
         policy_id: Option<Uuid>,

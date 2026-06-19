@@ -14,7 +14,7 @@ use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use uuid::Uuid;
@@ -112,7 +112,12 @@ fn build_ui(app: &libadwaita::Application) {
         .icon_name("media-eject-symbolic")
         .tooltip_text("Unmount temporary browse mounts")
         .build();
+    let rollback_status = gtk4::Button::builder()
+        .icon_name("document-open-recent-symbolic")
+        .tooltip_text("Rollback status")
+        .build();
     header.pack_end(&cleanup);
+    header.pack_end(&rollback_status);
     header.pack_end(&refresh);
     header.pack_start(&spinner);
 
@@ -423,6 +428,13 @@ fn build_ui(app: &libadwaita::Application) {
         );
     });
 
+    let state_for_rollback_status = ui_state.clone();
+    rollback_status.connect_clicked(move |btn| {
+        if let Some(window) = btn.root().and_downcast::<gtk4::Window>() {
+            open_rollback_status_window(&window, state_for_rollback_status.clone());
+        }
+    });
+
     let list_for_selector = list.clone();
     let search_for_selector = search.clone();
     let state_for_selector = ui_state.clone();
@@ -728,20 +740,23 @@ fn show_toast(toast_overlay: &libadwaita::ToastOverlay, message: &str) {
 
 fn check_pending_rollback(window: &gtk4::Window, toast_overlay: &libadwaita::ToastOverlay) {
     if let Ok(response) = handle_privileged(HelperRequest::GetPendingRollback) {
-        if let Some(data) = response.data {
-            if let Ok(prompt) = serde_json::from_value::<RollbackPrompt>(data.clone()) {
-                show_pending_rollback_dialog(window, toast_overlay, prompt);
-            } else if let Ok(plan) = serde_json::from_value::<RollbackPlan>(data) {
-                show_pending_rollback_dialog(
-                    window,
-                    toast_overlay,
-                    RollbackPrompt {
-                        plan,
-                        rebooted_since_staging: false,
-                    },
-                );
-            }
+        if let Some(prompt) = rollback_prompt_from_response(response) {
+            show_pending_rollback_dialog(window, toast_overlay, prompt);
         }
+    }
+}
+
+fn rollback_prompt_from_response(response: HelperResponse) -> Option<RollbackPrompt> {
+    let data = response.data?;
+    if let Ok(prompt) = serde_json::from_value::<RollbackPrompt>(data.clone()) {
+        Some(prompt)
+    } else {
+        serde_json::from_value::<RollbackPlan>(data)
+            .ok()
+            .map(|plan| RollbackPrompt {
+                plan,
+                rebooted_since_staging: false,
+            })
     }
 }
 
@@ -812,6 +827,333 @@ fn show_pending_rollback_dialog(
         let _ = window_ref.activate_action("win.refresh", None);
     });
     dialog.present(Some(window));
+}
+
+fn open_rollback_status_window(parent: &gtk4::Window, state: UiState) {
+    let window = libadwaita::Window::builder()
+        .title("Rollback Status")
+        .default_width(620)
+        .default_height(680)
+        .modal(true)
+        .build();
+
+    let header = libadwaita::HeaderBar::new();
+    header.set_title_widget(Some(
+        &libadwaita::WindowTitle::builder()
+            .title("Rollback Status")
+            .subtitle("Current state and recovery history")
+            .build(),
+    ));
+
+    let content = dialog_content_box();
+    content.set_spacing(14);
+
+    let status_list = gtk4::ListBox::builder()
+        .selection_mode(gtk4::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+    let anchors_list = gtk4::ListBox::builder()
+        .selection_mode(gtk4::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+    let discarded_list = gtk4::ListBox::builder()
+        .selection_mode(gtk4::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+
+    let inventory = state.inventory.borrow().clone();
+    let pending_response = handle_privileged(HelperRequest::GetPendingRollback);
+    let pending = pending_response
+        .as_ref()
+        .ok()
+        .cloned()
+        .and_then(rollback_prompt_from_response);
+
+    append_rollback_summary_rows(&status_list, inventory.as_ref(), pending.as_ref());
+    content.append(&section_label("State"));
+    content.append(&status_list);
+
+    content.append(&section_label("Return Anchors"));
+    append_rollback_history_rows(
+        &anchors_list,
+        rollback_history_entries(inventory.as_ref(), rollback_anchor_path),
+        "No return anchors found",
+        "A return anchor is created before staging rollback.",
+        "edit-undo-symbolic",
+    );
+    content.append(&anchors_list);
+
+    content.append(&section_label("Discarded Roots"));
+    append_rollback_history_rows(
+        &discarded_list,
+        rollback_history_entries(inventory.as_ref(), discarded_root_path),
+        "No discarded roots found",
+        "Discarded roots appear after keeping or reverting a rollback.",
+        "user-trash-symbolic",
+    );
+    content.append(&discarded_list);
+
+    if let Some(prompt) = pending {
+        let actions = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk4::Align::End)
+            .margin_top(4)
+            .build();
+        let later = gtk4::Button::builder().label("Decide Later").build();
+        let revert_label = if prompt.rebooted_since_staging {
+            "Revert"
+        } else {
+            "Cancel Rollback"
+        };
+        let revert = gtk4::Button::builder()
+            .label(revert_label)
+            .css_classes(["destructive-action"])
+            .build();
+        actions.append(&later);
+        actions.append(&revert);
+
+        if prompt.rebooted_since_staging {
+            let keep = gtk4::Button::builder()
+                .label("Keep Restored System")
+                .css_classes(["suggested-action"])
+                .build();
+            let state_for_keep = state.clone();
+            let window_for_keep = window.clone();
+            let plan_id = prompt.plan.id;
+            keep.connect_clicked(move |_| {
+                match handle_privileged(HelperRequest::CommitRollback { plan_id }) {
+                    Ok(_) => {
+                        show_toast(
+                            &state_for_keep.toast_overlay,
+                            "Rollback kept as the current system",
+                        );
+                        window_for_keep.close();
+                    }
+                    Err(err) => show_toast(
+                        &state_for_keep.toast_overlay,
+                        &format!("Failed to keep rollback: {err}"),
+                    ),
+                }
+            });
+            actions.append(&keep);
+        }
+
+        let state_for_revert = state.clone();
+        let window_for_revert = window.clone();
+        let plan_id = prompt.plan.id;
+        revert.connect_clicked(move |_| {
+            match handle_privileged(HelperRequest::RevertRollback { plan_id }) {
+                Ok(_) => {
+                    show_toast(
+                        &state_for_revert.toast_overlay,
+                        "Rollback reverted — reboot to return to the previous system",
+                    );
+                    window_for_revert.close();
+                }
+                Err(err) => show_toast(
+                    &state_for_revert.toast_overlay,
+                    &format!("Failed to revert rollback: {err}"),
+                ),
+            }
+        });
+
+        let window_for_later = window.clone();
+        later.connect_clicked(move |_| window_for_later.close());
+        content.append(&actions);
+    } else if let Err(err) = pending_response {
+        let warning = gtk4::Label::builder()
+            .label(format!("Could not read rollback state: {err}"))
+            .halign(gtk4::Align::Start)
+            .wrap(true)
+            .css_classes(["caption", "error"])
+            .build();
+        content.append(&warning);
+    }
+
+    let scroll = gtk4::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vexpand(true)
+        .child(&content)
+        .build();
+    let root = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
+        .build();
+    root.append(&header);
+    root.append(&scroll);
+    window.set_content(Some(&root));
+    window.set_transient_for(Some(parent));
+    window.present();
+}
+
+fn append_rollback_summary_rows(
+    list: &gtk4::ListBox,
+    inventory: Option<&SubvolumeInventory>,
+    pending: Option<&RollbackPrompt>,
+) {
+    if let Some(prompt) = pending {
+        let plan = &prompt.plan;
+        let staged_at: chrono::DateTime<Local> = DateTime::from(plan.created_at);
+        append_rollback_row(
+            list,
+            if prompt.rebooted_since_staging {
+                "Rollback booted"
+            } else {
+                "Rollback staged"
+            },
+            &format!(
+                "Source: {} · return anchor: {}",
+                plan.source_snapshot_path.display(),
+                plan.return_snapshot_path.display()
+            ),
+            "system-reboot-symbolic",
+        );
+        append_rollback_row(
+            list,
+            "Current root target",
+            &format!(
+                "{} · staged {}",
+                plan.replaced_subvol_path.display(),
+                staged_at.format("%Y-%m-%d %H:%M")
+            ),
+            "drive-harddisk-symbolic",
+        );
+        let next_step = if prompt.rebooted_since_staging {
+            "Choose Keep Restored System to accept this boot, or Revert to restore the return anchor and reboot."
+        } else {
+            "Reboot to activate the restored snapshot, or cancel rollback before reboot."
+        };
+        append_rollback_row(list, "Next step", next_step, "go-next-symbolic");
+    } else {
+        append_rollback_row(
+            list,
+            "No pending rollback",
+            "The system is not waiting for rollback confirmation.",
+            "emblem-ok-symbolic",
+        );
+        let root = inventory
+            .and_then(current_mount_subvolume)
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "Unknown active subvolume".into());
+        append_rollback_row(list, "Current root", &root, "drive-harddisk-symbolic");
+        append_rollback_row(
+            list,
+            "Next step",
+            "Stage rollback from a managed snapshot when you want to test or restore it.",
+            "go-next-symbolic",
+        );
+    }
+}
+
+fn append_rollback_history_rows(
+    list: &gtk4::ListBox,
+    entries: Vec<&Subvolume>,
+    empty_title: &str,
+    empty_subtitle: &str,
+    icon: &str,
+) {
+    if entries.is_empty() {
+        append_rollback_row(
+            list,
+            empty_title,
+            empty_subtitle,
+            "dialog-information-symbolic",
+        );
+        return;
+    }
+    for subvolume in entries {
+        append_rollback_row(
+            list,
+            &subvolume.path.display().to_string(),
+            &rollback_entry_subtitle(subvolume),
+            icon,
+        );
+    }
+}
+
+fn rollback_history_entries(
+    inventory: Option<&SubvolumeInventory>,
+    predicate: fn(&Path) -> bool,
+) -> Vec<&Subvolume> {
+    let mut entries = inventory
+        .map(|inventory| {
+            inventory
+                .subvolumes
+                .iter()
+                .filter(|subvolume| predicate(&subvolume.path))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    entries.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.path.cmp(&b.path)));
+    entries
+}
+
+fn append_rollback_row(list: &gtk4::ListBox, title: &str, subtitle: &str, icon: &str) {
+    let row = libadwaita::ActionRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .build();
+    row.add_prefix(
+        &gtk4::Image::builder()
+            .icon_name(icon)
+            .pixel_size(20)
+            .valign(gtk4::Align::Center)
+            .build(),
+    );
+    list.append(&row);
+}
+
+fn section_label(label: &str) -> gtk4::Label {
+    gtk4::Label::builder()
+        .label(label)
+        .halign(gtk4::Align::Start)
+        .css_classes(["heading", "dim-label"])
+        .build()
+}
+
+fn rollback_entry_subtitle(subvolume: &Subvolume) -> String {
+    let mut parts = vec![format!("ID {}", subvolume.id.0)];
+    if let Some(created_at) = subvolume.created_at {
+        let local: chrono::DateTime<Local> = DateTime::from(created_at);
+        parts.push(local.format("%Y-%m-%d %H:%M").to_string());
+    }
+    if subvolume.readonly {
+        parts.push("read-only".into());
+    } else {
+        parts.push("writable".into());
+    }
+    if !subvolume.tags.is_empty() {
+        parts.push(subvolume.tags.join(", "));
+    }
+    parts.join(" · ")
+}
+
+fn current_mount_subvolume(inventory: &SubvolumeInventory) -> Option<&Path> {
+    inventory
+        .subvolumes
+        .iter()
+        .find(|subvolume| subvolume.mountpoint.as_deref() == Some(inventory.mountpoint.as_path()))
+        .or_else(|| {
+            inventory
+                .subvolumes
+                .iter()
+                .find(|subvolume| subvolume.mountpoint.as_deref() == Some(Path::new("/")))
+        })
+        .map(|subvolume| subvolume.path.as_path())
+}
+
+fn rollback_anchor_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("return-"))
+        && path.starts_with("@btrfs-manager")
+}
+
+fn discarded_root_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("discarded-"))
+        && path.starts_with("@btrfs-manager")
 }
 
 fn short_snapshot_mount_name(path: &std::path::Path) -> String {
@@ -929,21 +1271,30 @@ fn view_mode_label(view_mode: &ViewMode) -> &'static str {
     }
 }
 
-fn update_inventory_summary(
-    state: &UiState,
-    inventory: &SubvolumeInventory,
+struct InventorySummaryCounts {
     visible_snapshots: usize,
     total_snapshots: usize,
     managed_snapshots: usize,
     external_snapshots: usize,
     visible_subvolumes: usize,
+}
+
+fn update_inventory_summary(
+    state: &UiState,
+    inventory: &SubvolumeInventory,
+    counts: InventorySummaryCounts,
     query: &str,
 ) {
     state
         .summary_scope
         .set_label(&inventory.mountpoint.display().to_string());
     state.summary_counts.set_label(&format!(
-        "{visible_snapshots} visible snapshots · {total_snapshots} total · {managed_snapshots} managed · {external_snapshots} external · {visible_subvolumes} subvolumes"
+        "{} visible snapshots · {} total · {} managed · {} external · {} subvolumes",
+        counts.visible_snapshots,
+        counts.total_snapshots,
+        counts.managed_snapshots,
+        counts.external_snapshots,
+        counts.visible_subvolumes,
     ));
     let filter = state.filter.borrow();
     let time_range = state.time_range.borrow();
@@ -1219,11 +1570,13 @@ fn render_inventory(
     update_inventory_summary(
         &state,
         inventory,
-        snapshots.len(),
-        all_snapshots.len(),
-        managed_snapshot_count,
-        external_snapshot_count,
-        subvolumes.len(),
+        InventorySummaryCounts {
+            visible_snapshots: snapshots.len(),
+            total_snapshots: all_snapshots.len(),
+            managed_snapshots: managed_snapshot_count,
+            external_snapshots: external_snapshot_count,
+            visible_subvolumes: subvolumes.len(),
+        },
         query,
     );
 

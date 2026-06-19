@@ -44,13 +44,9 @@ xmllint --noout "$POLKIT_POLICY"
 
 for action in \
   org.btrfsmanager.helper.discovery \
-  org.btrfsmanager.helper.snapshot.create \
-  org.btrfsmanager.helper.snapshot.delete \
-  org.btrfsmanager.helper.snapshot.readonly \
-  org.btrfsmanager.helper.mount \
+  org.btrfsmanager.helper.manage \
   org.btrfsmanager.helper.rollback \
-  org.btrfsmanager.helper.policy.read \
-  org.btrfsmanager.helper.policy.write
+  org.btrfsmanager.helper.policy.read
 do
   pkaction --action-id "$action" >/dev/null
 done

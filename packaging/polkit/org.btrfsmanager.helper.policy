@@ -13,36 +13,9 @@
       <allow_active>yes</allow_active>
     </defaults>
   </action>
-  <action id="org.btrfsmanager.helper.snapshot.create">
-    <description>Create Btrfs snapshots</description>
-    <message>Authentication is required to create Btrfs snapshots.</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
-    </defaults>
-  </action>
-  <action id="org.btrfsmanager.helper.snapshot.delete">
-    <description>Delete Btrfs snapshots</description>
-    <message>Authentication is required to delete Btrfs snapshots.</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
-    </defaults>
-  </action>
-  <action id="org.btrfsmanager.helper.snapshot.readonly">
-    <description>Change Btrfs snapshot read-only state</description>
-    <message>Authentication is required to lock or unlock Btrfs snapshots.</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
-    </defaults>
-  </action>
-  <action id="org.btrfsmanager.helper.mount">
-    <description>Mount Btrfs snapshots for browsing</description>
-    <message>Authentication is required to mount or unmount Btrfs snapshot browse views.</message>
+  <action id="org.btrfsmanager.helper.manage">
+    <description>Manage Btrfs snapshots and policies</description>
+    <message>Authentication is required to manage Btrfs snapshots, mounts, and policies.</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
@@ -65,15 +38,6 @@
       <allow_any>no</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>yes</allow_active>
-    </defaults>
-  </action>
-  <action id="org.btrfsmanager.helper.policy.write">
-    <description>Modify or run Btrfs snapshot policies</description>
-    <message>Authentication is required to modify or run Btrfs snapshot policies.</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
 </policyconfig>

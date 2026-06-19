@@ -8,13 +8,9 @@ pub const OBJECT_PATH: &str = "/org/btrfsmanager/Helper";
 pub const INTERFACE_NAME: &str = "org.btrfsmanager.Helper";
 
 pub const ACTION_DISCOVERY: &str = "org.btrfsmanager.helper.discovery";
-pub const ACTION_SNAPSHOT_CREATE: &str = "org.btrfsmanager.helper.snapshot.create";
-pub const ACTION_SNAPSHOT_DELETE: &str = "org.btrfsmanager.helper.snapshot.delete";
-pub const ACTION_SNAPSHOT_READONLY: &str = "org.btrfsmanager.helper.snapshot.readonly";
-pub const ACTION_MOUNT: &str = "org.btrfsmanager.helper.mount";
+pub const ACTION_MANAGE: &str = "org.btrfsmanager.helper.manage";
 pub const ACTION_ROLLBACK: &str = "org.btrfsmanager.helper.rollback";
 pub const ACTION_POLICY_READ: &str = "org.btrfsmanager.helper.policy.read";
-pub const ACTION_POLICY_WRITE: &str = "org.btrfsmanager.helper.policy.write";
 
 pub struct HelperService {
     connection: Connection,
@@ -123,30 +119,30 @@ pub fn action_for_request(request: &HelperRequest) -> &'static str {
         HelperRequest::DiscoverFilesystems | HelperRequest::ListSubvolumes { .. } => {
             ACTION_DISCOVERY
         }
-        HelperRequest::CreateSnapshot { .. } => ACTION_SNAPSHOT_CREATE,
-        HelperRequest::DeleteSnapshot { .. } => ACTION_SNAPSHOT_DELETE,
-        HelperRequest::SetSnapshotReadOnly { .. } => ACTION_SNAPSHOT_READONLY,
+        HelperRequest::CreateSnapshot { .. }
+        | HelperRequest::DeleteSnapshot { .. }
+        | HelperRequest::SetSnapshotReadOnly { .. }
+        | HelperRequest::CreateManagedSnapshot { .. }
+        | HelperRequest::SetManagedSnapshotReadOnly { .. }
+        | HelperRequest::DeleteManagedSnapshot { .. } => ACTION_MANAGE,
         HelperRequest::MountSnapshot { .. }
         | HelperRequest::MountSubvolume { .. }
         | HelperRequest::MountTopLevel { .. }
         | HelperRequest::UnmountSnapshot { .. }
-        | HelperRequest::CleanupManagedMounts => ACTION_MOUNT,
-        HelperRequest::CreateManagedSnapshot { .. } => ACTION_SNAPSHOT_CREATE,
+        | HelperRequest::CleanupManagedMounts
+        | HelperRequest::OpenFileManager { .. } => ACTION_MANAGE,
         HelperRequest::ListManagedSnapshots => ACTION_POLICY_READ,
-        HelperRequest::SetManagedSnapshotReadOnly { .. } => ACTION_SNAPSHOT_READONLY,
-        HelperRequest::DeleteManagedSnapshot { .. } => ACTION_SNAPSHOT_DELETE,
         HelperRequest::StageRollback { .. }
         | HelperRequest::CommitRollback { .. }
         | HelperRequest::RevertRollback { .. } => ACTION_ROLLBACK,
         HelperRequest::GetPendingRollback => ACTION_DISCOVERY,
-        HelperRequest::OpenFileManager { .. } => ACTION_MOUNT,
         HelperRequest::ListSnapshotPolicies
         | HelperRequest::PreviewRetention { .. }
         | HelperRequest::PreviewRetentionForPolicy { .. }
         | HelperRequest::ListPolicyRunLogs { .. } => ACTION_POLICY_READ,
         HelperRequest::UpsertSnapshotPolicy { .. }
         | HelperRequest::SetSnapshotPolicyEnabled { .. }
-        | HelperRequest::RunRetentionPolicy { .. } => ACTION_POLICY_WRITE,
+        | HelperRequest::RunRetentionPolicy { .. } => ACTION_MANAGE,
     }
 }
 
@@ -187,24 +183,24 @@ mod tests {
                 destination: PathBuf::from("/b"),
                 readonly: true,
             }),
-            ACTION_SNAPSHOT_CREATE
+            ACTION_MANAGE
         );
         assert_eq!(
             action_for_request(&HelperRequest::DeleteSnapshot {
                 path: PathBuf::from("/a"),
             }),
-            ACTION_SNAPSHOT_DELETE
+            ACTION_MANAGE
         );
         assert_eq!(
             action_for_request(&HelperRequest::SetSnapshotReadOnly {
                 path: PathBuf::from("/a"),
                 readonly: true,
             }),
-            ACTION_SNAPSHOT_READONLY
+            ACTION_MANAGE
         );
         assert_eq!(
             action_for_request(&HelperRequest::CleanupManagedMounts),
-            ACTION_MOUNT
+            ACTION_MANAGE
         );
         assert_eq!(
             action_for_request(&HelperRequest::StageRollback {
@@ -218,7 +214,7 @@ mod tests {
             action_for_request(&HelperRequest::RunRetentionPolicy {
                 policy_id: Uuid::new_v4()
             }),
-            ACTION_POLICY_WRITE
+            ACTION_MANAGE
         );
         assert_eq!(
             action_for_request(&HelperRequest::ListSnapshotPolicies),
