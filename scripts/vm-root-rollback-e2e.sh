@@ -60,6 +60,10 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
 }
 
+helper_json() {
+  RUST_LOG=error "$HELPER" "$@"
+}
+
 require_vm_safety() {
   require_disposable_vm_marker
   if [ "${BTRFS_MANAGER_E2E_ALLOW_HOST:-0}" = "1" ]; then
@@ -255,7 +259,7 @@ start_phase() {
 
   log "Staging rollback to $TARGET_PATH"
   local response
-  response="$("$HELPER" stage-rollback / "$TARGET_PATH" "$RETURN_PATH")"
+  response="$(helper_json stage-rollback / "$TARGET_PATH" "$RETURN_PATH")"
   PLAN_ID="$(printf '%s\n' "$response" | jq -r '.data.id')"
   if [ -z "$PLAN_ID" ] || [ "$PLAN_ID" = "null" ]; then
     fail "could not parse rollback plan id from helper response: $response"
@@ -277,14 +281,14 @@ verify_rollback_phase() {
 
   log "Checking pending rollback prompt state"
   local pending
-  pending="$("$HELPER" get-pending-rollback)"
+  pending="$(helper_json get-pending-rollback)"
   pending_id="$(printf '%s\n' "$pending" | jq -r '.data.plan.id')"
   rebooted="$(printf '%s\n' "$pending" | jq -r '.data.rebooted_since_staging')"
   [ "$pending_id" = "$PLAN_ID" ] || fail "pending rollback id mismatch; expected $PLAN_ID got ${pending_id:-none}"
   [ "$rebooted" = "true" ] || fail "pending rollback should report rebooted_since_staging=true, got $rebooted"
 
   log "Reverting rollback to return anchor"
-  "$HELPER" revert-rollback "$PLAN_ID" >/dev/null
+  helper_json revert-rollback "$PLAN_ID" >/dev/null
   write_state "verify_revert"
   reboot_or_stop "Rollback reverted"
 }
@@ -298,7 +302,7 @@ verify_revert_phase() {
   actual="$(cat "$MARKER")"
   [ "$actual" = "$CHANGED_VALUE" ] || fail "revert boot did not restore return anchor marker; expected $CHANGED_VALUE got $actual"
 
-  pending="$("$HELPER" get-pending-rollback)"
+  pending="$(helper_json get-pending-rollback)"
   [ "$(printf '%s\n' "$pending" | jq -r '.data')" = "null" ] || fail "rollback should be resolved after revert: $pending"
 
   log "Cleaning up E2E unit and target snapshot"
