@@ -46,6 +46,12 @@ enum ViewMode {
     ByHour,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UiLanguage {
+    En,
+    PtBr,
+}
+
 #[derive(Clone)]
 struct UiState {
     inventory: Rc<RefCell<Option<SubvolumeInventory>>>,
@@ -61,6 +67,177 @@ struct UiState {
     summary_counts: gtk4::Label,
     summary_filters: gtk4::Label,
     spinner: gtk4::Spinner,
+}
+
+fn ui_language() -> UiLanguage {
+    let value = std::env::var("BTRFS_MANAGER_LANG")
+        .or_else(|_| std::env::var("LANG"))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if value.starts_with("pt") {
+        UiLanguage::PtBr
+    } else {
+        UiLanguage::En
+    }
+}
+
+fn tr(key: &'static str) -> &'static str {
+    match (ui_language(), key) {
+        (UiLanguage::PtBr, "snapshots") => "Snapshots",
+        (UiLanguage::PtBr, "refresh") => "Atualizar",
+        (UiLanguage::PtBr, "cleanup_mounts") => "Desmontar montagens temporárias",
+        (UiLanguage::PtBr, "rollback_status") => "Status do rollback",
+        (UiLanguage::PtBr, "system_diagnostics") => "Diagnósticos do sistema",
+        (UiLanguage::PtBr, "snapshot_inventory") => "Inventário de snapshots",
+        (UiLanguage::PtBr, "no_filesystem_selected") => "Nenhum filesystem selecionado",
+        (UiLanguage::PtBr, "search_placeholder") => "Buscar por nome, tag ou data",
+        (UiLanguage::PtBr, "btrfs_filesystem") => "Filesystem Btrfs",
+        (UiLanguage::PtBr, "loading") => "Carregando",
+        (UiLanguage::PtBr, "no_btrfs_filesystems") => "Nenhum filesystem Btrfs encontrado",
+        (UiLanguage::PtBr, "discovery_returned_no_mountpoints") => {
+            "A descoberta não retornou pontos de montagem"
+        }
+        (UiLanguage::PtBr, "no_discovery_data") => "Nenhum dado de descoberta retornado",
+        (UiLanguage::PtBr, "no_structured_data") => "Nenhum dado estruturado retornado",
+        (UiLanguage::PtBr, "read_filesystem_discovery") => {
+            "Não foi possível ler a descoberta de filesystems"
+        }
+        (UiLanguage::PtBr, "discover_filesystems") => {
+            "Não foi possível descobrir filesystems Btrfs"
+        }
+        (UiLanguage::PtBr, "read_inventory") => "Não foi possível ler o inventário",
+        (UiLanguage::PtBr, "unmount_temporary_mounts") => {
+            "Não foi possível desmontar montagens temporárias"
+        }
+        (UiLanguage::PtBr, "cleanup_stale_mounts") => {
+            "Não foi possível limpar montagens temporárias antigas"
+        }
+        (UiLanguage::PtBr, "browse_snapshot") => "Não foi possível abrir o snapshot",
+        (UiLanguage::PtBr, "unmount_snapshot") => "Não foi possível desmontar o snapshot",
+        (UiLanguage::PtBr, "unlock_snapshot") => "Não foi possível desbloquear o snapshot",
+        (UiLanguage::PtBr, "lock_snapshot") => "Não foi possível bloquear o snapshot",
+        (UiLanguage::PtBr, "delete_snapshot") => "Não foi possível apagar o snapshot",
+        (UiLanguage::PtBr, "create_snapshot") => "Não foi possível criar o snapshot",
+        (UiLanguage::PtBr, "stage_rollback") => "Não foi possível preparar o rollback",
+        (UiLanguage::PtBr, "read_rollback_state") => "Não foi possível ler o estado do rollback",
+        (UiLanguage::PtBr, "keep_rollback") => "Não foi possível manter o rollback",
+        (UiLanguage::PtBr, "revert_rollback") => "Não foi possível reverter o rollback",
+        (UiLanguage::PtBr, "run_diagnostics") => "Não foi possível executar diagnósticos",
+        (UiLanguage::PtBr, "save_policy") => "Não foi possível salvar a política",
+        (UiLanguage::PtBr, "preview_policy") => "Não foi possível gerar a prévia",
+        (UiLanguage::PtBr, "run_policy") => "Não foi possível executar a política",
+        (UiLanguage::PtBr, "load_policy_logs") => "Não foi possível carregar os logs",
+        (UiLanguage::PtBr, "service_hint") => {
+            "O serviço do Btrfs Manager não está disponível. Instale o pacote e reinicie o serviço, ou abra Diagnósticos para verificar o helper."
+        }
+        (UiLanguage::PtBr, "polkit_hint") => {
+            "A autorização foi negada. Tente novamente e confirme a senha quando o Polkit pedir."
+        }
+        (UiLanguage::PtBr, "btrfs_subvolume_hint") => {
+            "Um caminho esperado como subvolume Btrfs existe como diretório comum. Abra Diagnósticos para ver o caminho e corrigir antes de continuar."
+        }
+        (UiLanguage::PtBr, "path_hint") => {
+            "O caminho foi rejeitado por segurança. Use um caminho dentro do filesystem Btrfs, sem '..' ou caminho absoluto onde o app espera caminho relativo."
+        }
+        (UiLanguage::PtBr, "systemctl_hint") => {
+            "O systemd recusou a operação. Verifique se o helper está instalado e se os units foram carregados."
+        }
+        (UiLanguage::PtBr, "generic_hint") => {
+            "A operação não foi concluída. Abra Diagnósticos se o problema continuar."
+        }
+        (_, "snapshots") => "Snapshots",
+        (_, "refresh") => "Refresh",
+        (_, "cleanup_mounts") => "Unmount temporary browse mounts",
+        (_, "rollback_status") => "Rollback status",
+        (_, "system_diagnostics") => "System diagnostics",
+        (_, "snapshot_inventory") => "Snapshot Inventory",
+        (_, "no_filesystem_selected") => "No filesystem selected",
+        (_, "search_placeholder") => "Search by name, tag, or date",
+        (_, "btrfs_filesystem") => "Btrfs filesystem",
+        (_, "loading") => "Loading",
+        (_, "no_btrfs_filesystems") => "No Btrfs filesystems found",
+        (_, "discovery_returned_no_mountpoints") => "Discovery returned no mountpoints",
+        (_, "no_discovery_data") => "No filesystem discovery returned",
+        (_, "no_structured_data") => "No structured data returned",
+        (_, "read_filesystem_discovery") => "Failed to read filesystem discovery",
+        (_, "discover_filesystems") => "Filesystem discovery failed",
+        (_, "read_inventory") => "Failed to read inventory",
+        (_, "unmount_temporary_mounts") => "Failed to unmount temporary mounts",
+        (_, "cleanup_stale_mounts") => "Failed to cleanup stale browse mounts",
+        (_, "browse_snapshot") => "Failed to browse snapshot",
+        (_, "unmount_snapshot") => "Failed to unmount snapshot",
+        (_, "unlock_snapshot") => "Failed to unlock snapshot",
+        (_, "lock_snapshot") => "Failed to lock snapshot",
+        (_, "delete_snapshot") => "Failed to delete snapshot",
+        (_, "create_snapshot") => "Failed to create snapshot",
+        (_, "stage_rollback") => "Failed to stage rollback",
+        (_, "read_rollback_state") => "Failed to read rollback state",
+        (_, "keep_rollback") => "Failed to keep rollback",
+        (_, "revert_rollback") => "Failed to revert rollback",
+        (_, "run_diagnostics") => "Diagnostics failed",
+        (_, "save_policy") => "Failed to save policy",
+        (_, "preview_policy") => "Failed to preview policy",
+        (_, "run_policy") => "Failed to run policy",
+        (_, "load_policy_logs") => "Failed to load policy logs",
+        (_, "service_hint") => {
+            "The Btrfs Manager service is not available. Install the package and restart the service, or open Diagnostics to inspect the helper."
+        }
+        (_, "polkit_hint") => {
+            "Authorization was denied. Try again and confirm the password when Polkit asks."
+        }
+        (_, "btrfs_subvolume_hint") => {
+            "A path that must be a Btrfs subvolume exists as a regular directory. Open Diagnostics to find the path before continuing."
+        }
+        (_, "path_hint") => {
+            "The path was rejected for safety. Use a path inside the Btrfs filesystem, without '..' or absolute paths where a relative Btrfs path is expected."
+        }
+        (_, "systemctl_hint") => {
+            "systemd rejected the operation. Check that the helper package is installed and units are loaded."
+        }
+        (_, "generic_hint") => {
+            "The operation did not complete. Open Diagnostics if it keeps failing."
+        }
+        (_, other) => other,
+    }
+}
+
+fn user_error(action_key: &'static str, err: &anyhow::Error) -> String {
+    let detail = err.to_string();
+    format!("{}. {}\n{}", tr(action_key), error_hint(&detail), detail)
+}
+
+fn error_hint(detail: &str) -> &'static str {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("system service is not available")
+        || lower.contains("org.btrfsmanager.helper")
+    {
+        tr("service_hint")
+    } else if lower.contains("polkit denied") || lower.contains("auth") {
+        tr("polkit_hint")
+    } else if lower.contains("exists but is not a btrfs subvolume") {
+        tr("btrfs_subvolume_hint")
+    } else if lower.contains("unsafe path")
+        || lower.contains("traversal")
+        || lower.contains("must be relative")
+    {
+        tr("path_hint")
+    } else if lower.contains("systemctl") {
+        tr("systemctl_hint")
+    } else {
+        tr("generic_hint")
+    }
+}
+
+fn show_error_toast(
+    toast_overlay: &libadwaita::ToastOverlay,
+    action_key: &'static str,
+    err: &anyhow::Error,
+) {
+    show_toast(toast_overlay, &user_error(action_key, err));
+}
+
+fn set_error_status_row(list: &gtk4::ListBox, action_key: &'static str, err: &anyhow::Error) {
+    set_status_row(list, tr(action_key), &user_error(action_key, err));
 }
 
 pub fn run() {
@@ -99,26 +276,26 @@ fn build_ui(app: &libadwaita::Application) {
     header.set_title_widget(Some(
         &libadwaita::WindowTitle::builder()
             .title("Btrfs Manager")
-            .subtitle("Snapshots")
+            .subtitle(tr("snapshots"))
             .build(),
     ));
 
     let spinner = gtk4::Spinner::new();
     let refresh = gtk4::Button::builder()
         .icon_name("view-refresh-symbolic")
-        .tooltip_text("Refresh")
+        .tooltip_text(tr("refresh"))
         .build();
     let cleanup = gtk4::Button::builder()
         .icon_name("media-eject-symbolic")
-        .tooltip_text("Unmount temporary browse mounts")
+        .tooltip_text(tr("cleanup_mounts"))
         .build();
     let rollback_status = gtk4::Button::builder()
         .icon_name("document-open-recent-symbolic")
-        .tooltip_text("Rollback status")
+        .tooltip_text(tr("rollback_status"))
         .build();
     let diagnostics = gtk4::Button::builder()
         .icon_name("utilities-system-monitor-symbolic")
-        .tooltip_text("System diagnostics")
+        .tooltip_text(tr("system_diagnostics"))
         .build();
     header.pack_end(&cleanup);
     header.pack_end(&diagnostics);
@@ -127,12 +304,12 @@ fn build_ui(app: &libadwaita::Application) {
     header.pack_start(&spinner);
 
     let page_title = gtk4::Label::builder()
-        .label("Snapshot Inventory")
+        .label(tr("snapshot_inventory"))
         .halign(gtk4::Align::Start)
         .css_classes(["title-1"])
         .build();
     let summary_scope = gtk4::Label::builder()
-        .label("No filesystem selected")
+        .label(tr("no_filesystem_selected"))
         .halign(gtk4::Align::Start)
         .hexpand(true)
         .ellipsize(gtk4::pango::EllipsizeMode::Middle)
@@ -172,11 +349,11 @@ fn build_ui(app: &libadwaita::Application) {
     summary_panel.append(&summary_text);
 
     let search = gtk4::SearchEntry::builder()
-        .placeholder_text("Search by name, tag, or date")
+        .placeholder_text(tr("search_placeholder"))
         .hexpand(true)
         .build();
     let filesystem_selector = gtk4::ComboBoxText::builder()
-        .tooltip_text("Btrfs filesystem")
+        .tooltip_text(tr("btrfs_filesystem"))
         .hexpand(true)
         .build();
     let browse_row = gtk4::Box::builder()
@@ -414,7 +591,7 @@ fn build_ui(app: &libadwaita::Application) {
                 }
                 Err(err) => show_toast(
                     &state.toast_overlay,
-                    &format!("Failed to unmount temporary mounts: {err}"),
+                    &user_error("unmount_temporary_mounts", &err),
                 ),
             }
         });
@@ -508,7 +685,7 @@ fn build_ui(app: &libadwaita::Application) {
             }
             Err(err) => show_toast(
                 &ui_state.toast_overlay,
-                &format!("Failed to cleanup stale browse mounts: {err}"),
+                &user_error("cleanup_stale_mounts", &err),
             ),
         }
     }
@@ -540,7 +717,7 @@ fn discover_and_load(
         return;
     }
 
-    set_status_row(&list, "Loading", "Discovering Btrfs filesystems…");
+    set_status_row(&list, tr("loading"), "Discovering Btrfs filesystems…");
     state.spinner.start();
     selector.set_sensitive(false);
 
@@ -573,22 +750,19 @@ fn discover_and_load(
                             state.suppress_selector_signal.set(false);
                             set_status_row(
                                 &list,
-                                "No Btrfs filesystems found",
-                                "Discovery returned no mountpoints",
+                                tr("no_btrfs_filesystems"),
+                                tr("discovery_returned_no_mountpoints"),
                             );
                         }
                     }
-                    Err(err) => set_status_row(
-                        &list,
-                        "Failed to read filesystem discovery",
-                        &err.to_string(),
-                    ),
+                    Err(err) => {
+                        let err = anyhow::Error::from(err);
+                        set_error_status_row(&list, "read_filesystem_discovery", &err);
+                    }
                 },
-                None => {
-                    set_status_row(&list, "No filesystem discovery returned", &response.message)
-                }
+                None => set_status_row(&list, tr("no_discovery_data"), &response.message),
             },
-            Err(err) => set_status_row(&list, "Filesystem discovery failed", &err.to_string()),
+            Err(err) => set_error_status_row(&list, "discover_filesystems", &err),
         }
     });
 }
@@ -599,7 +773,7 @@ fn configured_mountpoint_override() -> Option<PathBuf> {
 
 fn load_mountpoint(list: gtk4::ListBox, state: UiState, query: String, mountpoint: PathBuf) {
     clear_list(&list);
-    set_status_row(&list, "Loading", &mountpoint.display().to_string());
+    set_status_row(&list, tr("loading"), &mountpoint.display().to_string());
     state.spinner.start();
 
     glib::MainContext::default().spawn_local(async move {
@@ -615,11 +789,14 @@ fn load_mountpoint(list: gtk4::ListBox, state: UiState, query: String, mountpoin
                         *state.inventory.borrow_mut() = Some(inventory.clone());
                         render_inventory(&list, &inventory, &query, state);
                     }
-                    Err(err) => set_status_row(&list, "Failed to read inventory", &err.to_string()),
+                    Err(err) => {
+                        let err = anyhow::Error::from(err);
+                        set_error_status_row(&list, "read_inventory", &err);
+                    }
                 },
-                None => set_status_row(&list, "No structured data returned", &response.message),
+                None => set_status_row(&list, tr("no_structured_data"), &response.message),
             },
-            Err(err) => set_status_row(&list, "Discovery failed", &err.to_string()),
+            Err(err) => set_error_status_row(&list, "read_inventory", &err),
         }
     });
 }
@@ -673,9 +850,7 @@ fn handle_privileged(request: HelperRequest) -> anyhow::Result<HelperResponse> {
                 let helper = Helper::new(SystemCommandRunner);
                 helper.handle(request).map_err(anyhow::Error::from)
             } else {
-                anyhow::bail!(
-                    "Btrfs Manager system service is not available: {error}. Install and start org.btrfsmanager.Helper, or set BTRFS_MANAGER_DEV_LOCAL_HELPER=1 only for repository development."
-                );
+                anyhow::bail!("{}: {error}", tr("service_hint"));
             }
         }
     }
@@ -823,16 +998,14 @@ fn show_pending_rollback_dialog(
         match response {
             "commit" => match handle_privileged(HelperRequest::CommitRollback { plan_id }) {
                 Ok(_) => show_toast(&toast_overlay, "Rollback kept as the current system"),
-                Err(err) => show_toast(&toast_overlay, &format!("Failed to keep rollback: {err}")),
+                Err(err) => show_error_toast(&toast_overlay, "keep_rollback", &err),
             },
             "revert" => match handle_privileged(HelperRequest::RevertRollback { plan_id }) {
                 Ok(_) => show_toast(
                     &toast_overlay,
                     "Rollback reverted — reboot to return to the previous system",
                 ),
-                Err(err) => {
-                    show_toast(&toast_overlay, &format!("Failed to revert rollback: {err}"))
-                }
+                Err(err) => show_error_toast(&toast_overlay, "revert_rollback", &err),
             },
             _ => return,
         }
@@ -895,8 +1068,8 @@ fn open_diagnostics_window(parent: &gtk4::Window, state: UiState) {
                     clear_list(&list_for_result);
                     append_rollback_row(
                         &list_for_result,
-                        "Diagnostics failed",
-                        &err.to_string(),
+                        tr("run_diagnostics"),
+                        &user_error("run_diagnostics", &err),
                         "dialog-error-symbolic",
                     );
                 }
@@ -905,14 +1078,11 @@ fn open_diagnostics_window(parent: &gtk4::Window, state: UiState) {
                 clear_list(&list_for_result);
                 append_rollback_row(
                     &list_for_result,
-                    "Diagnostics failed",
-                    &err.to_string(),
+                    tr("run_diagnostics"),
+                    &user_error("run_diagnostics", &err),
                     "dialog-error-symbolic",
                 );
-                show_toast(
-                    &state_for_result.toast_overlay,
-                    "Diagnostics failed. Open the diagnostics window for details.",
-                );
+                show_error_toast(&state_for_result.toast_overlay, "run_diagnostics", &err);
             }
         }
     });
@@ -1057,7 +1227,7 @@ fn open_rollback_status_window(parent: &gtk4::Window, state: UiState) {
                     }
                     Err(err) => show_toast(
                         &state_for_keep.toast_overlay,
-                        &format!("Failed to keep rollback: {err}"),
+                        &user_error("keep_rollback", &err),
                     ),
                 }
             });
@@ -1078,7 +1248,7 @@ fn open_rollback_status_window(parent: &gtk4::Window, state: UiState) {
                 }
                 Err(err) => show_toast(
                     &state_for_revert.toast_overlay,
-                    &format!("Failed to revert rollback: {err}"),
+                    &user_error("revert_rollback", &err),
                 ),
             }
         });
@@ -1088,7 +1258,7 @@ fn open_rollback_status_window(parent: &gtk4::Window, state: UiState) {
         content.append(&actions);
     } else if let Err(err) = pending_response {
         let warning = gtk4::Label::builder()
-            .label(format!("Could not read rollback state: {err}"))
+            .label(user_error("read_rollback_state", &err))
             .halign(gtk4::Align::Start)
             .wrap(true)
             .css_classes(["caption", "error"])
@@ -1926,10 +2096,7 @@ fn render_snapshot_row(
                     let msg = mounted.warning.as_deref().unwrap_or("Snapshot mounted");
                     show_toast(&state.toast_overlay, msg);
                 }
-                Err(err) => show_toast(
-                    &state.toast_overlay,
-                    &format!("Failed to browse snapshot: {err}"),
-                ),
+                Err(err) => show_toast(&state.toast_overlay, &user_error("browse_snapshot", &err)),
             }
         });
     });
@@ -1967,10 +2134,7 @@ fn render_snapshot_row(
                     unmount_btn.set_sensitive(false);
                     show_toast(&state.toast_overlay, "Snapshot unmounted");
                 }
-                Err(err) => show_toast(
-                    &state.toast_overlay,
-                    &format!("Failed to unmount snapshot: {err}"),
-                ),
+                Err(err) => show_toast(&state.toast_overlay, &user_error("unmount_snapshot", &err)),
             }
         });
     });
@@ -2043,7 +2207,7 @@ fn render_snapshot_row(
                     }
                     Err(err) => show_toast(
                         &state_c.toast_overlay,
-                        &format!("Failed to unlock snapshot: {err}"),
+                        &user_error("unlock_snapshot", &err),
                     ),
                 }
             });
@@ -2077,7 +2241,7 @@ fn render_snapshot_row(
                 }
                 Err(err) => show_toast(
                     &state_for_lock.toast_overlay,
-                    &format!("Failed to lock snapshot: {err}"),
+                    &user_error("lock_snapshot", &err),
                 ),
             }
         });
@@ -2127,10 +2291,9 @@ fn render_snapshot_row(
                         list_c.remove(&row_c);
                         show_toast(&state_c.toast_overlay, "Snapshot deleted");
                     }
-                    Err(err) => show_toast(
-                        &state_c.toast_overlay,
-                        &format!("Failed to delete snapshot: {err}"),
-                    ),
+                    Err(err) => {
+                        show_toast(&state_c.toast_overlay, &user_error("delete_snapshot", &err))
+                    }
                 }
             });
             let window = btn.root().and_downcast::<gtk4::Window>();
@@ -2184,7 +2347,7 @@ fn render_snapshot_row(
                     ),
                     Err(err) => show_toast(
                         &state_c.toast_overlay,
-                        &format!("Falha ao fazer staging do rollback: {err}"),
+                        &user_error("stage_rollback", &err),
                     ),
                 }
             });
@@ -2425,10 +2588,7 @@ fn open_create_snapshot_dialog(
                     mountpoint.clone(),
                 );
             }
-            Err(err) => show_toast(
-                &state.toast_overlay,
-                &format!("Failed to create snapshot: {err}"),
-            ),
+            Err(err) => show_toast(&state.toast_overlay, &user_error("create_snapshot", &err)),
         }
     });
 
@@ -2616,11 +2776,14 @@ fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume)
                         save_for_preview.set_sensitive(true);
                         run_for_preview.set_sensitive(true);
                     }
-                    Err(err) => show_toast(&state_for_preview.toast_overlay, &err.to_string()),
+                    Err(err) => {
+                        let err = anyhow::Error::from(err);
+                        show_error_toast(&state_for_preview.toast_overlay, "preview_policy", &err);
+                    }
                 },
                 None => preview_for_button.set_label(&response.message),
             },
-            Err(err) => show_toast(&state_for_preview.toast_overlay, &err.to_string()),
+            Err(err) => show_error_toast(&state_for_preview.toast_overlay, "preview_policy", &err),
         }
     });
 
@@ -2638,7 +2801,7 @@ fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume)
         let policy = build_for_save();
         match handle_privileged(HelperRequest::UpsertSnapshotPolicy { policy }) {
             Ok(response) => show_toast(&state_for_save.toast_overlay, &response.message),
-            Err(err) => show_toast(&state_for_save.toast_overlay, &err.to_string()),
+            Err(err) => show_error_toast(&state_for_save.toast_overlay, "save_policy", &err),
         }
     });
 
@@ -2663,7 +2826,7 @@ fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume)
             })
         }) {
             Ok(response) => show_toast(&state_for_run.toast_overlay, &response.message),
-            Err(err) => show_toast(&state_for_run.toast_overlay, &err.to_string()),
+            Err(err) => show_error_toast(&state_for_run.toast_overlay, "run_policy", &err),
         }
     });
 
@@ -2674,11 +2837,14 @@ fn open_policy_dialog(state: UiState, mountpoint: PathBuf, subvolume: Subvolume)
             Ok(response) => match response.data {
                 Some(data) => match serde_json::from_value::<Vec<PolicyRunLog>>(data) {
                     Ok(values) => logs_for_button.set_label(&format_policy_logs(&values)),
-                    Err(err) => show_toast(&state_for_logs.toast_overlay, &err.to_string()),
+                    Err(err) => {
+                        let err = anyhow::Error::from(err);
+                        show_error_toast(&state_for_logs.toast_overlay, "load_policy_logs", &err);
+                    }
                 },
                 None => logs_for_button.set_label(&response.message),
             },
-            Err(err) => show_toast(&state_for_logs.toast_overlay, &err.to_string()),
+            Err(err) => show_error_toast(&state_for_logs.toast_overlay, "load_policy_logs", &err),
         }
     });
 
