@@ -1701,6 +1701,7 @@ fn looks_like_snapper_snapshot(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use std::cell::RefCell;
 
     struct RecordingRunner {
@@ -2183,6 +2184,267 @@ mod tests {
                 Ok("ok\n".into())
             }
         }
+    }
+
+    struct RetentionRunner {
+        calls: RefCell<Vec<(String, Vec<String>)>>,
+    }
+
+    impl CommandRunner for RetentionRunner {
+        fn run(&self, program: &str, args: &[String]) -> Result<String, HelperError> {
+            self.calls
+                .borrow_mut()
+                .push((program.to_string(), args.to_vec()));
+            if program == "findmnt" && args.iter().any(|arg| arg == "UUID") {
+                Ok("550e8400-e29b-41d4-a716-446655440000\n".into())
+            } else if program == "findmnt" && args.iter().any(|arg| arg == "--mountpoint") {
+                Ok("mounted\n".into())
+            } else if program == "findmnt" && args.iter().any(|arg| arg == "SOURCE") {
+                Ok("/dev/loop-test\n".into())
+            } else if program == "btrfs"
+                && args.first().map(String::as_str) == Some("subvolume")
+                && args.get(1).map(String::as_str) == Some("create")
+            {
+                let path = PathBuf::from(args.get(2).expect("subvolume create path"));
+                std::fs::create_dir_all(path)?;
+                Ok("Create subvolume\n".into())
+            } else if program == "btrfs"
+                && args.first().map(String::as_str) == Some("subvolume")
+                && args.get(1).map(String::as_str) == Some("show")
+            {
+                let path = PathBuf::from(args.get(2).expect("subvolume show path"));
+                if path.exists() {
+                    Ok("Name: @btrfs-manager\n".into())
+                } else {
+                    Err(HelperError::InvalidPolicy(format!(
+                        "missing subvolume {}",
+                        path.display()
+                    )))
+                }
+            } else if program == "btrfs"
+                && args.first().map(String::as_str) == Some("subvolume")
+                && args.get(1).map(String::as_str) == Some("snapshot")
+            {
+                let source = PathBuf::from(args.get(3).expect("snapshot source"));
+                let destination = PathBuf::from(args.get(4).expect("snapshot destination"));
+                if !source.exists() {
+                    return Err(HelperError::InvalidPolicy(format!(
+                        "missing snapshot source {}",
+                        source.display()
+                    )));
+                }
+                std::fs::create_dir_all(destination)?;
+                Ok("snapshot created\n".into())
+            } else if program == "btrfs"
+                && args.first().map(String::as_str) == Some("subvolume")
+                && args.get(1).map(String::as_str) == Some("delete")
+            {
+                let path = PathBuf::from(args.get(2).expect("subvolume delete path"));
+                std::fs::remove_dir_all(path)?;
+                Ok("deleted\n".into())
+            } else {
+                Ok("ok\n".into())
+            }
+        }
+    }
+
+    fn test_policy(id: Uuid) -> SnapshotPolicy {
+        SnapshotPolicy {
+            id,
+            filesystem_id: None,
+            subvolume_id: SubvolumeId(256),
+            source_path: PathBuf::from("@"),
+            mountpoint: PathBuf::from("/mnt"),
+            snapshot_root: PathBuf::from("@btrfs-manager/scheduled"),
+            schedule: btrfs_manager_core::PolicySchedule::Hourly,
+            keep_hourly: 1,
+            keep_daily: 0,
+            keep_weekly: 0,
+            keep_monthly: 0,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn upsert_policy_writes_systemd_timer_and_enable_command() {
+        with_test_db(|| {
+            let test_root =
+                std::env::temp_dir().join(format!("btrfs-manager-scheduler-{}", Uuid::new_v4()));
+            let systemd_dir = test_root.join("systemd");
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
+                std::env::set_var("BTRFS_MANAGER_SYSTEMD_DIR", &systemd_dir);
+            }
+
+            let policy = SnapshotPolicy {
+                schedule: btrfs_manager_core::PolicySchedule::Daily,
+                ..test_policy(Uuid::new_v4())
+            };
+            let runner = RetentionRunner {
+                calls: RefCell::new(Vec::new()),
+            };
+            let helper = Helper::new(runner);
+            helper
+                .handle(HelperRequest::UpsertSnapshotPolicy {
+                    policy: policy.clone(),
+                })
+                .unwrap();
+
+            let service = std::fs::read_to_string(
+                systemd_dir.join(format!("btrfs-manager-policy-{}.service", policy.id)),
+            )
+            .unwrap();
+            let timer = std::fs::read_to_string(
+                systemd_dir.join(format!("btrfs-manager-policy-{}.timer", policy.id)),
+            )
+            .unwrap();
+            assert!(service.contains(&format!("run-retention-policy --policy-id {}", policy.id)));
+            assert!(timer.contains("OnCalendar=daily"));
+            assert!(timer.contains("Persistent=true"));
+
+            let calls = helper.runner.calls.borrow();
+            assert!(calls.iter().any(|(program, args)| {
+                program == "systemctl" && args == &["daemon-reload".to_string()]
+            }));
+            assert!(calls.iter().any(|(program, args)| {
+                program == "systemctl"
+                    && args
+                        == &[
+                            "enable".to_string(),
+                            "--now".to_string(),
+                            format!("btrfs-manager-policy-{}.timer", policy.id),
+                        ]
+            }));
+
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+                std::env::remove_var("BTRFS_MANAGER_SYSTEMD_DIR");
+            }
+            std::fs::remove_dir_all(test_root).ok();
+        });
+    }
+
+    #[test]
+    fn scheduled_retention_run_creates_snapshot_deletes_expired_and_logs_result() {
+        with_test_db(|| {
+            let test_root =
+                std::env::temp_dir().join(format!("btrfs-manager-retention-{}", Uuid::new_v4()));
+            let fs_uuid = "550e8400-e29b-41d4-a716-446655440000";
+            let top = test_root.join(fs_uuid);
+            std::fs::create_dir_all(top.join("@/etc")).unwrap();
+            std::fs::create_dir_all(top.join("@btrfs-manager/state")).unwrap();
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
+            }
+
+            let policy = SnapshotPolicy {
+                keep_hourly: 2,
+                ..test_policy(Uuid::new_v4())
+            };
+            let state_db = top.join("@btrfs-manager/state/state.db");
+            let store = StateStore::open_at(state_db.clone()).unwrap();
+            store.upsert_policy(&policy).unwrap();
+
+            let old_bucket = Utc.with_ymd_and_hms(2026, 1, 1, 10, 30, 0).unwrap();
+            let keep = Snapshot {
+                id: Uuid::new_v4(),
+                source_subvolume: SubvolumeId(256),
+                path: policy_snapshot_dir(&policy).join("keep-current-hour"),
+                created_at: old_bucket,
+                tags: Vec::new(),
+                origin: SnapshotOrigin::Managed,
+                state: SnapshotState::ReadOnly,
+            };
+            let expired = Snapshot {
+                id: Uuid::new_v4(),
+                source_subvolume: SubvolumeId(256),
+                path: policy_snapshot_dir(&policy).join("delete-older-hour"),
+                created_at: old_bucket - chrono::Duration::minutes(10),
+                tags: Vec::new(),
+                origin: SnapshotOrigin::Managed,
+                state: SnapshotState::ReadOnly,
+            };
+            let anchor = Snapshot {
+                id: Uuid::new_v4(),
+                source_subvolume: SubvolumeId(256),
+                path: policy_snapshot_dir(&policy).join("keep-anchor"),
+                created_at: old_bucket - chrono::Duration::hours(3),
+                tags: Vec::new(),
+                origin: SnapshotOrigin::Managed,
+                state: SnapshotState::RollbackAnchor,
+            };
+            for snapshot in [&keep, &expired, &anchor] {
+                std::fs::create_dir_all(top.join(&snapshot.path)).unwrap();
+                store
+                    .insert_managed_snapshot(Some(policy.id), snapshot)
+                    .unwrap();
+            }
+
+            let runner = RetentionRunner {
+                calls: RefCell::new(Vec::new()),
+            };
+            let helper = Helper::new(runner);
+            let response = helper
+                .handle(HelperRequest::RunRetentionPolicy {
+                    policy_id: policy.id,
+                })
+                .unwrap();
+            let log: PolicyRunLog = serde_json::from_value(response.data.unwrap()).unwrap();
+            assert!(matches!(log.status, PolicyRunStatus::Success));
+            let created = log.created_snapshot.expect("run should create a snapshot");
+            assert_eq!(log.deleted_snapshots, vec![expired.path.clone()]);
+
+            assert!(top.join(&created).exists(), "new snapshot should exist");
+            assert!(
+                top.join(&keep.path).exists(),
+                "newest retained snapshot should remain"
+            );
+            assert!(
+                !top.join(&expired.path).exists(),
+                "expired snapshot should be deleted"
+            );
+            assert!(
+                top.join(&anchor.path).exists(),
+                "rollback anchor must never be deleted by retention"
+            );
+
+            let after = StateStore::open_at(state_db).unwrap();
+            let paths: Vec<_> = after
+                .list_managed_snapshots_for_policy(policy.id)
+                .unwrap()
+                .into_iter()
+                .map(|snapshot| snapshot.path)
+                .collect();
+            assert!(paths.contains(&created));
+            assert!(paths.contains(&keep.path));
+            assert!(paths.contains(&anchor.path));
+            assert!(!paths.contains(&expired.path));
+
+            let logs = after.list_policy_logs(policy.id).unwrap();
+            assert_eq!(logs.len(), 1);
+            assert!(matches!(logs[0].status, PolicyRunStatus::Success));
+            assert_eq!(logs[0].deleted_snapshots, vec![expired.path]);
+
+            let calls = helper.runner.calls.borrow();
+            assert!(calls.iter().any(|(program, args)| {
+                program == "btrfs"
+                    && args.first().map(String::as_str) == Some("subvolume")
+                    && args.get(1).map(String::as_str) == Some("snapshot")
+            }));
+            assert!(calls.iter().any(|(program, args)| {
+                program == "btrfs"
+                    && args.first().map(String::as_str) == Some("subvolume")
+                    && args.get(1).map(String::as_str) == Some("delete")
+                    && args
+                        .get(2)
+                        .is_some_and(|path| path.ends_with("delete-older-hour"))
+            }));
+
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+            }
+            std::fs::remove_dir_all(test_root).ok();
+        });
     }
 
     #[test]
