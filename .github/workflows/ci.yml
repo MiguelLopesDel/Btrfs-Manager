@@ -244,11 +244,12 @@ jobs:
           diff -u packaging/arch/.SRCINFO packaging/arch/.SRCINFO.generated
       - name: Build AUR package
         run: |
-          git branch -f main "$GITHUB_SHA"
+          su builder -c "cd '$GITHUB_WORKSPACE' && git checkout -B main '$GITHUB_SHA'"
+          su builder -c "git config --global protocol.file.allow always"
           cp -a packaging/arch /tmp/btrfs-manager-aur
           sed -i "s#git+https://github.com/MiguelLopesDel/Btrfs-Manager.git#git+file://$GITHUB_WORKSPACE#" /tmp/btrfs-manager-aur/PKGBUILD
           chown -R builder:builder /tmp/btrfs-manager-aur
-          su builder -c "cd /tmp/btrfs-manager-aur && GIT_ALLOW_PROTOCOL=file:git:https:ssh makepkg --nodeps --noarchive --noconfirm"
+          su builder -c "cd /tmp/btrfs-manager-aur && makepkg --nodeps --noarchive --noconfirm"
 
   e2e-headless:
     name: Headless GUI E2E
