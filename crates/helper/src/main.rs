@@ -16,6 +16,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     Service,
+    RunDiagnostics,
     ListSubvolumes {
         mountpoint: PathBuf,
     },
@@ -106,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
     let helper = Helper::new(SystemCommandRunner);
     let request = match cli.command {
         Commands::Service => unreachable!(),
+        Commands::RunDiagnostics => HelperRequest::RunDiagnostics,
         Commands::ListSubvolumes { mountpoint } => HelperRequest::ListSubvolumes { mountpoint },
         Commands::DiscoverFilesystems => HelperRequest::DiscoverFilesystems,
         Commands::CreateSnapshot {

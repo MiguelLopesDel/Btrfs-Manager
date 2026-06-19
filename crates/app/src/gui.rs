@@ -3,8 +3,8 @@ use btrfs_manager_core::{
     Subvolume, SubvolumeKind,
 };
 use btrfs_manager_helper::{
-    FilesystemDiscovery, Helper, HelperRequest, HelperResponse, SubvolumeInventory,
-    SystemCommandRunner,
+    DiagnosticCheck, DiagnosticStatus, DiagnosticsReport, FilesystemDiscovery, Helper,
+    HelperRequest, HelperResponse, SubvolumeInventory, SystemCommandRunner,
 };
 use chrono::{DateTime, Datelike, Local, Timelike, Utc};
 use gtk4::glib;
@@ -116,7 +116,12 @@ fn build_ui(app: &libadwaita::Application) {
         .icon_name("document-open-recent-symbolic")
         .tooltip_text("Rollback status")
         .build();
+    let diagnostics = gtk4::Button::builder()
+        .icon_name("utilities-system-monitor-symbolic")
+        .tooltip_text("System diagnostics")
+        .build();
     header.pack_end(&cleanup);
+    header.pack_end(&diagnostics);
     header.pack_end(&rollback_status);
     header.pack_end(&refresh);
     header.pack_start(&spinner);
@@ -432,6 +437,13 @@ fn build_ui(app: &libadwaita::Application) {
     rollback_status.connect_clicked(move |btn| {
         if let Some(window) = btn.root().and_downcast::<gtk4::Window>() {
             open_rollback_status_window(&window, state_for_rollback_status.clone());
+        }
+    });
+
+    let state_for_diagnostics = ui_state.clone();
+    diagnostics.connect_clicked(move |btn| {
+        if let Some(window) = btn.root().and_downcast::<gtk4::Window>() {
+            open_diagnostics_window(&window, state_for_diagnostics.clone());
         }
     });
 
@@ -827,6 +839,119 @@ fn show_pending_rollback_dialog(
         let _ = window_ref.activate_action("win.refresh", None);
     });
     dialog.present(Some(window));
+}
+
+fn open_diagnostics_window(parent: &gtk4::Window, state: UiState) {
+    let window = libadwaita::Window::builder()
+        .title("Diagnostics")
+        .default_width(640)
+        .default_height(680)
+        .modal(true)
+        .build();
+    let header = libadwaita::HeaderBar::new();
+    header.set_title_widget(Some(
+        &libadwaita::WindowTitle::builder()
+            .title("Diagnostics")
+            .subtitle("System readiness")
+            .build(),
+    ));
+
+    let content = dialog_content_box();
+    content.set_spacing(14);
+    let list = gtk4::ListBox::builder()
+        .selection_mode(gtk4::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+    append_rollback_row(
+        &list,
+        "Running checks",
+        "Inspecting helper, Btrfs, rollback, and scheduler state",
+        "view-refresh-symbolic",
+    );
+    content.append(&section_label("Checks"));
+    content.append(&list);
+
+    let scroll = gtk4::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vexpand(true)
+        .child(&content)
+        .build();
+    let root = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Vertical)
+        .build();
+    root.append(&header);
+    root.append(&scroll);
+    window.set_content(Some(&root));
+    window.set_transient_for(Some(parent));
+    window.present();
+
+    let list_for_result = list.clone();
+    let state_for_result = state.clone();
+    glib::MainContext::default().spawn_local(async move {
+        match handle_privileged_async(HelperRequest::RunDiagnostics).await {
+            Ok(response) => match diagnostics_report_from_response(response) {
+                Ok(report) => render_diagnostics_report(&list_for_result, &report),
+                Err(err) => {
+                    clear_list(&list_for_result);
+                    append_rollback_row(
+                        &list_for_result,
+                        "Diagnostics failed",
+                        &err.to_string(),
+                        "dialog-error-symbolic",
+                    );
+                }
+            },
+            Err(err) => {
+                clear_list(&list_for_result);
+                append_rollback_row(
+                    &list_for_result,
+                    "Diagnostics failed",
+                    &err.to_string(),
+                    "dialog-error-symbolic",
+                );
+                show_toast(
+                    &state_for_result.toast_overlay,
+                    "Diagnostics failed. Open the diagnostics window for details.",
+                );
+            }
+        }
+    });
+}
+
+fn diagnostics_report_from_response(response: HelperResponse) -> anyhow::Result<DiagnosticsReport> {
+    let data = response
+        .data
+        .ok_or_else(|| anyhow::anyhow!("helper returned no diagnostics data"))?;
+    Ok(serde_json::from_value(data)?)
+}
+
+fn render_diagnostics_report(list: &gtk4::ListBox, report: &DiagnosticsReport) {
+    clear_list(list);
+    for check in &report.checks {
+        append_diagnostic_row(list, check);
+    }
+}
+
+fn append_diagnostic_row(list: &gtk4::ListBox, check: &DiagnosticCheck) {
+    let subtitle = if check.details.is_empty() {
+        check.message.clone()
+    } else {
+        format!("{} · {}", check.message, check.details.join(" · "))
+    };
+    append_rollback_row(
+        list,
+        &check.name,
+        &subtitle,
+        diagnostic_status_icon(&check.status),
+    );
+}
+
+fn diagnostic_status_icon(status: &DiagnosticStatus) -> &'static str {
+    match status {
+        DiagnosticStatus::Ok => "emblem-ok-symbolic",
+        DiagnosticStatus::Warning => "dialog-warning-symbolic",
+        DiagnosticStatus::Error => "dialog-error-symbolic",
+    }
 }
 
 fn open_rollback_status_window(parent: &gtk4::Window, state: UiState) {
