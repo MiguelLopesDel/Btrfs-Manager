@@ -6,7 +6,7 @@ pkgdesc="Modern desktop manager for Btrfs subvolumes and snapshots"
 arch=('x86_64')
 url="https://github.com/MiguelLopesDel/Btrfs-Manager"
 license=('AGPL-3.0-or-later')
-depends=('btrfs-progs' 'dbus' 'gtk4' 'libadwaita' 'polkit' 'systemd' 'xdg-utils')
+depends=('btrfs-progs' 'dbus' 'gtk4' 'libadwaita' 'polkit' 'sqlite' 'systemd' 'xdg-utils')
 makedepends=('rust' 'cargo' 'git')
 optdepends=('grub-btrfs: GRUB snapshot boot integration'
             'refind-btrfs: rEFInd snapshot boot integration')
@@ -23,8 +23,18 @@ pkgver() {
 
 prepare() {
   cd "$srcdir/$pkgname"
+  # Drop the in-repo developer cargo config (forces clang + mold, which are
+  # not part of base-devel) so the package builds with the default toolchain.
+  rm -f .cargo/config.toml .cargo/config
   cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
 }
+
+# Link against the system SQLite (per Arch packaging guidelines) instead of the
+# statically bundled copy. The bundled static libsqlite3.a fails to link on
+# Arch's toolchain (archive-ordering issue), while dynamic linking is robust.
+# This overrides rusqlite's "bundled" feature without touching the workspace,
+# so CI keeps building with the bundled copy for portability.
+export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
 
 build() {
   cd "$srcdir/$pkgname"
