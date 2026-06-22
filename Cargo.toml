@@ -8,7 +8,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-license = "GPL-3.0-or-later"
+license = "AGPL-3.0-or-later"
 repository = "https://github.com/MiguelLopesDel/Btrfs-Manager"
 rust-version = "1.87"
 

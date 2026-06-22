@@ -1,11 +1,11 @@
-# Maintainer: Btrfs Manager contributors
+# Maintainer: MiguelLopesDel <btrfsmanager.protegee996@simplelogin.com>
 pkgname=btrfs-manager-git
 pkgver=0.1.0.r48.g1eb6e584882c
 pkgrel=1
 pkgdesc="Modern desktop manager for Btrfs subvolumes and snapshots"
 arch=('x86_64')
 url="https://github.com/MiguelLopesDel/Btrfs-Manager"
-license=('GPL-3.0-or-later')
+license=('AGPL-3.0-or-later')
 depends=('btrfs-progs' 'dbus' 'gtk4' 'libadwaita' 'polkit' 'systemd' 'xdg-utils')
 makedepends=('rust' 'cargo' 'git')
 optdepends=('grub-btrfs: GRUB snapshot boot integration'
@@ -38,6 +38,7 @@ check() {
 
 package() {
   cd "$srcdir/$pkgname"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm755 target/release/btrfs-manager-app "$pkgdir/usr/bin/btrfs-manager-app"
   install -Dm755 target/release/btrfs-manager-helper "$pkgdir/usr/lib/btrfs-manager/btrfs-manager-helper"
   install -Dm644 packaging/linux/org.btrfsmanager.App.desktop "$pkgdir/usr/share/applications/org.btrfsmanager.App.desktop"
