@@ -124,7 +124,8 @@ pub fn action_for_request(request: &HelperRequest) -> &'static str {
         | HelperRequest::SetSnapshotReadOnly { .. }
         | HelperRequest::CreateManagedSnapshot { .. }
         | HelperRequest::SetManagedSnapshotReadOnly { .. }
-        | HelperRequest::DeleteManagedSnapshot { .. } => ACTION_MANAGE,
+        | HelperRequest::DeleteManagedSnapshot { .. }
+        | HelperRequest::DeleteManagedSnapshots { .. } => ACTION_MANAGE,
         HelperRequest::MountSnapshot { .. }
         | HelperRequest::MountSubvolume { .. }
         | HelperRequest::MountTopLevel { .. }
@@ -204,6 +205,13 @@ mod tests {
         );
         assert_eq!(
             action_for_request(&HelperRequest::CleanupManagedMounts),
+            ACTION_MANAGE
+        );
+        assert_eq!(
+            action_for_request(&HelperRequest::DeleteManagedSnapshots {
+                mountpoint: PathBuf::from("/"),
+                subvolume_paths: vec![PathBuf::from("@btrfs-manager/managed-a")],
+            }),
             ACTION_MANAGE
         );
         assert_eq!(

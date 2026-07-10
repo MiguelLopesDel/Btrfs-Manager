@@ -19,6 +19,11 @@ impl StateStore {
             std::fs::create_dir_all(parent)?;
         }
         let connection = Connection::open(path)?;
+        // Each request opens its own connection, and writers can overlap (the
+        // retention timer, GUI operations, and the reconcile pass in
+        // list_subvolumes). Wait for the lock instead of failing immediately
+        // with SQLITE_BUSY.
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let store = Self { connection };
         store.migrate()?;
         Ok(store)

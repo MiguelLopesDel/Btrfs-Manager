@@ -105,6 +105,14 @@ pub enum HelperRequest {
         // subvolume path relative to the Btrfs volume root (e.g. "@btrfs-manager/managed-...")
         subvolume_path: PathBuf,
     },
+    /// Delete several managed snapshots in one authorized batch. Individual
+    /// failures do not abort the batch; the response reports which paths failed.
+    DeleteManagedSnapshots {
+        // filesystem mountpoint (e.g. "/")
+        mountpoint: PathBuf,
+        // subvolume paths relative to the Btrfs volume root
+        subvolume_paths: Vec<PathBuf>,
+    },
     ListSnapshotPolicies,
     UpsertSnapshotPolicy {
         policy: SnapshotPolicy,
@@ -166,6 +174,10 @@ pub struct SubvolumeInventory {
     pub mountpoint: PathBuf,
     pub subvolumes: Vec<Subvolume>,
     pub snapshots: Vec<Snapshot>,
+    /// Count of managed-snapshot DB rows pruned during this listing because their
+    /// subvolume was deleted outside the app (e.g. `btrfs subvolume delete`).
+    #[serde(default)]
+    pub reconciled_external_deletions: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -524,27 +536,23 @@ impl<R: CommandRunner> Helper<R> {
                 subvolume_path,
             } => {
                 validate_path(&mountpoint)?;
+                // Validate the snapshot path before any privileged side effects
+                // (top-level mount / @btrfs-manager creation): fail fast on an
+                // unsafe path instead of mounting first and rejecting later.
                 validate_relative_btrfs_path(&subvolume_path, "managed snapshot path")?;
                 let store = self.state_store_for_mountpoint(&mountpoint)?;
-                let id = store.find_managed_snapshot_id_by_path(&subvolume_path)?;
                 let top = self.ensure_top_level_mount(&mountpoint)?;
-                let abs_path = top.join(&subvolume_path);
-                self.runner.run(
-                    "btrfs",
-                    &[
-                        "subvolume".into(),
-                        "delete".into(),
-                        abs_path.display().to_string(),
-                    ],
-                )?;
-                store.delete_managed_snapshot(id)?;
-                tracing::info!(path = %subvolume_path.display(), "managed snapshot deleted");
+                self.delete_managed_snapshot_at(&store, &top, &subvolume_path)?;
                 Ok(HelperResponse {
                     ok: true,
                     message: format!("snapshot deleted: {}", subvolume_path.display()),
                     data: None,
                 })
             }
+            HelperRequest::DeleteManagedSnapshots {
+                mountpoint,
+                subvolume_paths,
+            } => self.delete_managed_snapshots_impl(mountpoint, subvolume_paths),
             HelperRequest::ListSnapshotPolicies => {
                 let policies = self.default_state_store()?.list_policies()?;
                 Ok(HelperResponse {
@@ -929,6 +937,79 @@ impl<R: CommandRunner> Helper<R> {
         }
     }
 
+    /// Delete a single managed snapshot subvolume and its state row. If the
+    /// subvolume is already gone from disk (e.g. removed with `btrfs subvolume
+    /// delete` outside the app), the stale DB row is still cleaned up.
+    fn delete_managed_snapshot_at(
+        &self,
+        store: &StateStore,
+        top: &Path,
+        subvolume_path: &Path,
+    ) -> Result<(), HelperError> {
+        validate_relative_btrfs_path(subvolume_path, "managed snapshot path")?;
+        let id = store.find_managed_snapshot_id_by_path(subvolume_path)?;
+        let abs_path = top.join(subvolume_path);
+        if abs_path.exists() {
+            self.runner.run(
+                "btrfs",
+                &[
+                    "subvolume".into(),
+                    "delete".into(),
+                    abs_path.display().to_string(),
+                ],
+            )?;
+        } else {
+            tracing::warn!(
+                path = %subvolume_path.display(),
+                "managed snapshot already missing on disk; cleaning stale state"
+            );
+        }
+        store.delete_managed_snapshot(id)?;
+        tracing::info!(path = %subvolume_path.display(), "managed snapshot deleted");
+        Ok(())
+    }
+
+    /// Delete several managed snapshots in one authorized batch. Individual
+    /// failures are collected and reported instead of aborting the batch.
+    fn delete_managed_snapshots_impl(
+        &self,
+        mountpoint: PathBuf,
+        subvolume_paths: Vec<PathBuf>,
+    ) -> Result<HelperResponse, HelperError> {
+        validate_path(&mountpoint)?;
+        let store = self.state_store_for_mountpoint(&mountpoint)?;
+        let top = self.ensure_top_level_mount(&mountpoint)?;
+        let mut deleted = 0usize;
+        let mut failed: Vec<serde_json::Value> = Vec::new();
+        for subvolume_path in &subvolume_paths {
+            match self.delete_managed_snapshot_at(&store, &top, subvolume_path) {
+                Ok(()) => deleted += 1,
+                Err(err) => {
+                    tracing::error!(
+                        path = %subvolume_path.display(),
+                        error = %err,
+                        "batch delete: item failed"
+                    );
+                    failed.push(serde_json::json!({
+                        "path": subvolume_path.display().to_string(),
+                        "error": err.to_string(),
+                    }));
+                }
+            }
+        }
+        let ok = failed.is_empty();
+        let message = if ok {
+            format!("{deleted} snapshot(s) deleted")
+        } else {
+            format!("{deleted} deleted, {} failed", failed.len())
+        };
+        Ok(HelperResponse {
+            ok,
+            message,
+            data: Some(serde_json::json!({ "failed": failed })),
+        })
+    }
+
     fn list_subvolumes(&self, mountpoint: PathBuf) -> Result<HelperResponse, HelperError> {
         validate_path(&mountpoint)?;
         let top = self.ensure_top_level_mount(&mountpoint)?;
@@ -943,8 +1024,43 @@ impl<R: CommandRunner> Helper<R> {
         )?;
         let mut subvolumes = parse_btrfs_subvolume_list(&output)?;
         classify_subvolumes(&mut subvolumes);
+        let mut reconciled_external_deletions = 0usize;
         if let Some(store) = Self::existing_state_store_at_top_level(&top)? {
             if let Ok(snapshots) = store.list_all_managed_snapshots() {
+                // Reconcile: prune DB rows whose subvolume was deleted outside the
+                // app. Rollback anchors are removed from the namespace on purpose
+                // by StageRollback while awaiting reboot, so never prune those.
+                //
+                // Guard: never prune when the live listing is empty. A real Btrfs
+                // volume that holds managed snapshots always lists at least those
+                // subvolumes; an empty result means the listing is unreliable
+                // (e.g. a stale/empty top-level mount), and pruning everything
+                // would destroy managed metadata (tags, unlock state, timestamps).
+                if !subvolumes.is_empty() {
+                    let real_paths: std::collections::HashSet<&Path> =
+                        subvolumes.iter().map(|s| s.path.as_path()).collect();
+                    for snap in &snapshots {
+                        if real_paths.contains(snap.path.as_path())
+                            || matches!(snap.state, SnapshotState::RollbackAnchor)
+                        {
+                            continue;
+                        }
+                        match store.delete_managed_snapshot(snap.id) {
+                            Ok(()) => {
+                                tracing::info!(
+                                    path = %snap.path.display(),
+                                    "pruned stale managed snapshot (deleted externally)"
+                                );
+                                reconciled_external_deletions += 1;
+                            }
+                            Err(err) => tracing::warn!(
+                                path = %snap.path.display(),
+                                error = %err,
+                                "failed to prune stale managed snapshot"
+                            ),
+                        }
+                    }
+                }
                 for subvolume in &mut subvolumes {
                     if let Some(snap) = snapshots.iter().find(|s| s.path == subvolume.path) {
                         subvolume.managed = true;
@@ -967,6 +1083,7 @@ impl<R: CommandRunner> Helper<R> {
             mountpoint,
             subvolumes,
             snapshots,
+            reconciled_external_deletions,
         };
         Ok(HelperResponse {
             ok: true,
@@ -2289,22 +2406,29 @@ mod tests {
 
     #[test]
     fn list_subvolumes_returns_structured_inventory() {
-        let tmp = std::env::temp_dir().join("btrfs-manager-test-toplevel");
-        unsafe {
-            std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &tmp);
-        }
-        let runner = RecordingRunner {
-            calls: RefCell::new(Vec::new()),
-        };
-        let helper = Helper::new(runner);
-        let response = helper
-            .handle(HelperRequest::ListSubvolumes {
-                mountpoint: "/mnt".into(),
-            })
-            .unwrap();
-        assert!(response.ok);
-        assert!(response.data.is_some());
-        let _ = std::fs::remove_dir_all(&tmp);
+        // Serialize on the same lock as other BTRFS_MANAGER_TOPLEVEL_DIR tests and
+        // always clear the (process-global) var so it does not leak into others.
+        with_test_db(|| {
+            let tmp = std::env::temp_dir().join("btrfs-manager-test-toplevel");
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &tmp);
+            }
+            let runner = RecordingRunner {
+                calls: RefCell::new(Vec::new()),
+            };
+            let helper = Helper::new(runner);
+            let response = helper
+                .handle(HelperRequest::ListSubvolumes {
+                    mountpoint: "/mnt".into(),
+                })
+                .unwrap();
+            assert!(response.ok);
+            assert!(response.data.is_some());
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     #[test]
@@ -2407,34 +2531,39 @@ mod tests {
 
     #[test]
     fn mounts_top_level_with_subvolid_five() {
-        let tmp = std::env::temp_dir().join("btrfs-manager-test-toplevel2");
-        unsafe {
-            std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &tmp);
-        }
-        let runner = RecordingRunner {
-            calls: RefCell::new(Vec::new()),
-        };
-        let helper = Helper::new(runner);
-        let response = helper
-            .handle(HelperRequest::MountTopLevel {
-                mountpoint: "/".into(),
-            })
-            .unwrap();
-        // Response must include the mount path.
-        assert!(response.data.is_some());
-        let calls = helper.runner.calls.borrow();
-        // Sequence: UUID query, mountpoint check, SOURCE query, mount.
-        let mount_call = calls.iter().find(|(prog, _)| prog == "mount").unwrap();
-        assert!(mount_call.1.contains(&"subvolid=5".to_string()));
-        assert!(mount_call.1.contains(&"/dev/mapper/cryptroot".to_string()));
-        assert!(
-            !mount_call
-                .1
-                .contains(&"/dev/mapper/cryptroot[/@]".to_string())
-        );
-        assert!(!mount_call.1.contains(&"ro,subvolid=5".to_string()));
-        drop(calls);
-        let _ = std::fs::remove_dir_all(&tmp);
+        with_test_db(|| {
+            let tmp = std::env::temp_dir().join("btrfs-manager-test-toplevel2");
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &tmp);
+            }
+            let runner = RecordingRunner {
+                calls: RefCell::new(Vec::new()),
+            };
+            let helper = Helper::new(runner);
+            let response = helper
+                .handle(HelperRequest::MountTopLevel {
+                    mountpoint: "/".into(),
+                })
+                .unwrap();
+            // Response must include the mount path.
+            assert!(response.data.is_some());
+            let calls = helper.runner.calls.borrow();
+            // Sequence: UUID query, mountpoint check, SOURCE query, mount.
+            let mount_call = calls.iter().find(|(prog, _)| prog == "mount").unwrap();
+            assert!(mount_call.1.contains(&"subvolid=5".to_string()));
+            assert!(mount_call.1.contains(&"/dev/mapper/cryptroot".to_string()));
+            assert!(
+                !mount_call
+                    .1
+                    .contains(&"/dev/mapper/cryptroot[/@]".to_string())
+            );
+            assert!(!mount_call.1.contains(&"ro,subvolid=5".to_string()));
+            drop(calls);
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     #[test]
@@ -3191,6 +3320,276 @@ mod tests {
             }
             std::fs::remove_dir_all(test_root).ok();
         });
+    }
+
+    // Runner for reconciliation test: returns a fixed `btrfs subvolume list` output
+    // so we control which subvolumes are "present on disk".
+    struct ListReconcileRunner {
+        list_output: String,
+    }
+
+    impl CommandRunner for ListReconcileRunner {
+        fn run(&self, program: &str, args: &[String]) -> Result<String, HelperError> {
+            if program == "findmnt" && args.iter().any(|arg| arg == "UUID") {
+                Ok("550e8400-e29b-41d4-a716-446655440000\n".into())
+            } else if program == "findmnt" && args.iter().any(|arg| arg == "--mountpoint") {
+                Ok("mounted\n".into())
+            } else if program == "btrfs"
+                && args.first().map(String::as_str) == Some("subvolume")
+                && args.get(1).map(String::as_str) == Some("list")
+            {
+                Ok(self.list_output.clone())
+            } else {
+                Ok("ok\n".into())
+            }
+        }
+    }
+
+    fn managed_snapshot(path: &str, state: SnapshotState) -> Snapshot {
+        Snapshot {
+            id: Uuid::new_v4(),
+            source_subvolume: SubvolumeId(256),
+            path: PathBuf::from(path),
+            created_at: Utc::now(),
+            tags: Vec::new(),
+            origin: SnapshotOrigin::Managed,
+            state,
+        }
+    }
+
+    #[test]
+    fn delete_managed_snapshots_removes_all_subvolumes_and_db_rows() {
+        with_test_db(|| {
+            let test_root =
+                std::env::temp_dir().join(format!("btrfs-manager-batch-delete-{}", Uuid::new_v4()));
+            let fs_uuid = "550e8400-e29b-41d4-a716-446655440000";
+            let top = test_root.join(fs_uuid);
+            std::fs::create_dir_all(top.join("@btrfs-manager/state")).unwrap();
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
+            }
+
+            let state_db = top.join("@btrfs-manager/state/state.db");
+            let store = StateStore::open_at(state_db.clone()).unwrap();
+            let a = managed_snapshot("@btrfs-manager/managed-a", SnapshotState::ReadOnly);
+            let b = managed_snapshot("@btrfs-manager/managed-b", SnapshotState::ReadOnly);
+            std::fs::create_dir_all(top.join(&a.path)).unwrap();
+            std::fs::create_dir_all(top.join(&b.path)).unwrap();
+            store.insert_managed_snapshot(None, &a).unwrap();
+            store.insert_managed_snapshot(None, &b).unwrap();
+
+            let helper = Helper::new(RetentionRunner {
+                calls: RefCell::new(Vec::new()),
+            });
+            let response = helper
+                .handle(HelperRequest::DeleteManagedSnapshots {
+                    mountpoint: PathBuf::from("/mnt"),
+                    subvolume_paths: vec![a.path.clone(), b.path.clone()],
+                })
+                .unwrap();
+
+            assert!(
+                response.ok,
+                "batch delete should succeed: {}",
+                response.message
+            );
+            assert!(!top.join(&a.path).exists());
+            assert!(!top.join(&b.path).exists());
+            let after = StateStore::open_at(state_db).unwrap();
+            assert!(
+                after.list_all_managed_snapshots().unwrap().is_empty(),
+                "all DB rows should be removed"
+            );
+
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+            }
+            std::fs::remove_dir_all(test_root).ok();
+        });
+    }
+
+    #[test]
+    fn delete_managed_snapshots_reports_partial_failure() {
+        with_test_db(|| {
+            let test_root = std::env::temp_dir()
+                .join(format!("btrfs-manager-batch-partial-{}", Uuid::new_v4()));
+            let fs_uuid = "550e8400-e29b-41d4-a716-446655440000";
+            let top = test_root.join(fs_uuid);
+            std::fs::create_dir_all(top.join("@btrfs-manager/state")).unwrap();
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
+            }
+
+            let state_db = top.join("@btrfs-manager/state/state.db");
+            let store = StateStore::open_at(state_db.clone()).unwrap();
+            let good = managed_snapshot("@btrfs-manager/managed-good", SnapshotState::ReadOnly);
+            std::fs::create_dir_all(top.join(&good.path)).unwrap();
+            store.insert_managed_snapshot(None, &good).unwrap();
+
+            let helper = Helper::new(RetentionRunner {
+                calls: RefCell::new(Vec::new()),
+            });
+            // Second path has no DB row → find_managed_snapshot_id_by_path fails.
+            let response = helper
+                .handle(HelperRequest::DeleteManagedSnapshots {
+                    mountpoint: PathBuf::from("/mnt"),
+                    subvolume_paths: vec![
+                        good.path.clone(),
+                        PathBuf::from("@btrfs-manager/not-in-db"),
+                    ],
+                })
+                .unwrap();
+
+            assert!(!response.ok, "partial failure must report not-ok");
+            let failed = response.data.unwrap()["failed"].as_array().unwrap().len();
+            assert_eq!(failed, 1, "exactly one path should fail");
+            // The valid one was still deleted.
+            assert!(!top.join(&good.path).exists());
+            let after = StateStore::open_at(state_db).unwrap();
+            assert!(after.list_all_managed_snapshots().unwrap().is_empty());
+
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+            }
+            std::fs::remove_dir_all(test_root).ok();
+        });
+    }
+
+    #[test]
+    fn list_subvolumes_reconciles_externally_deleted_snapshots() {
+        with_test_db(|| {
+            let test_root =
+                std::env::temp_dir().join(format!("btrfs-manager-reconcile-{}", Uuid::new_v4()));
+            let fs_uuid = "550e8400-e29b-41d4-a716-446655440000";
+            let top = test_root.join(fs_uuid);
+            std::fs::create_dir_all(top.join("@btrfs-manager/state")).unwrap();
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
+            }
+
+            let state_db = top.join("@btrfs-manager/state/state.db");
+            let store = StateStore::open_at(state_db.clone()).unwrap();
+            let keep = managed_snapshot("@btrfs-manager/managed-keep", SnapshotState::ReadOnly);
+            let stale = managed_snapshot("@btrfs-manager/managed-stale", SnapshotState::ReadOnly);
+            // A rollback anchor removed from the namespace on purpose must survive.
+            let anchor = managed_snapshot(
+                "@btrfs-manager/managed-anchor",
+                SnapshotState::RollbackAnchor,
+            );
+            store.insert_managed_snapshot(None, &keep).unwrap();
+            store.insert_managed_snapshot(None, &stale).unwrap();
+            store.insert_managed_snapshot(None, &anchor).unwrap();
+
+            // Only "keep" is still present in the live subvolume list.
+            let list_output = format!(
+                "ID 256 gen 10 top level 5 uuid db14ad1b-c411-f247-8770-e8386e647b88 path {}\n",
+                keep.path.display()
+            );
+            let helper = Helper::new(ListReconcileRunner { list_output });
+            let response = helper
+                .handle(HelperRequest::ListSubvolumes {
+                    mountpoint: PathBuf::from("/mnt"),
+                })
+                .unwrap();
+            let inventory: SubvolumeInventory =
+                serde_json::from_value(response.data.unwrap()).unwrap();
+            assert_eq!(
+                inventory.reconciled_external_deletions, 1,
+                "only the non-anchor missing snapshot should be reconciled"
+            );
+
+            let after = StateStore::open_at(state_db).unwrap();
+            let paths: Vec<PathBuf> = after
+                .list_all_managed_snapshots()
+                .unwrap()
+                .into_iter()
+                .map(|s| s.path)
+                .collect();
+            assert!(paths.contains(&keep.path), "present snapshot kept");
+            assert!(
+                !paths.contains(&stale.path),
+                "externally deleted snapshot pruned"
+            );
+            assert!(
+                paths.contains(&anchor.path),
+                "rollback anchor must not be pruned"
+            );
+
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+            }
+            std::fs::remove_dir_all(test_root).ok();
+        });
+    }
+
+    #[test]
+    fn list_subvolumes_does_not_prune_when_listing_is_empty() {
+        with_test_db(|| {
+            let test_root = std::env::temp_dir()
+                .join(format!("btrfs-manager-reconcile-empty-{}", Uuid::new_v4()));
+            let fs_uuid = "550e8400-e29b-41d4-a716-446655440000";
+            let top = test_root.join(fs_uuid);
+            std::fs::create_dir_all(top.join("@btrfs-manager/state")).unwrap();
+            unsafe {
+                std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
+            }
+
+            let state_db = top.join("@btrfs-manager/state/state.db");
+            let store = StateStore::open_at(state_db.clone()).unwrap();
+            let snap = managed_snapshot("@btrfs-manager/managed-x", SnapshotState::ReadOnly);
+            store.insert_managed_snapshot(None, &snap).unwrap();
+
+            // An empty (unreliable) live listing must NOT wipe managed metadata.
+            let helper = Helper::new(ListReconcileRunner {
+                list_output: String::new(),
+            });
+            let response = helper
+                .handle(HelperRequest::ListSubvolumes {
+                    mountpoint: PathBuf::from("/mnt"),
+                })
+                .unwrap();
+            let inventory: SubvolumeInventory =
+                serde_json::from_value(response.data.unwrap()).unwrap();
+            assert_eq!(
+                inventory.reconciled_external_deletions, 0,
+                "empty listing must not trigger any pruning"
+            );
+
+            let after = StateStore::open_at(state_db).unwrap();
+            assert_eq!(
+                after.list_all_managed_snapshots().unwrap().len(),
+                1,
+                "managed metadata must survive an empty listing"
+            );
+
+            unsafe {
+                std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+            }
+            std::fs::remove_dir_all(test_root).ok();
+        });
+    }
+
+    #[test]
+    fn delete_managed_snapshot_rejects_unsafe_path_before_mounting() {
+        let runner = RecordingRunner {
+            calls: RefCell::new(Vec::new()),
+        };
+        let helper = Helper::new(runner);
+        let err = helper
+            .handle(HelperRequest::DeleteManagedSnapshot {
+                mountpoint: PathBuf::from("/mnt"),
+                subvolume_path: PathBuf::from("@btrfs-manager/../../etc"),
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, HelperError::InvalidPolicy(_)),
+            "traversal path must be rejected, got {err}"
+        );
+        // Fail-fast: no privileged command (findmnt/mount/btrfs) may run first.
+        assert!(
+            helper.runner.calls.borrow().is_empty(),
+            "no command should run before path validation"
+        );
     }
 
     #[test]

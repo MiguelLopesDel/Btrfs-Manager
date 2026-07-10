@@ -67,6 +67,10 @@ struct UiState {
     summary_counts: gtk4::Label,
     summary_filters: gtk4::Label,
     spinner: gtk4::Spinner,
+    select_mode: Rc<Cell<bool>>,
+    selected: Rc<RefCell<HashSet<PathBuf>>>,
+    bulk_bar: gtk4::Revealer,
+    bulk_delete_btn: gtk4::Button,
 }
 
 fn ui_language() -> UiLanguage {
@@ -117,6 +121,11 @@ fn tr(key: &'static str) -> &'static str {
         (UiLanguage::PtBr, "unlock_snapshot") => "Não foi possível desbloquear o snapshot",
         (UiLanguage::PtBr, "lock_snapshot") => "Não foi possível bloquear o snapshot",
         (UiLanguage::PtBr, "delete_snapshot") => "Não foi possível apagar o snapshot",
+        (UiLanguage::PtBr, "delete_snapshots") => "Não foi possível apagar os snapshots",
+        (UiLanguage::PtBr, "select") => "Selecionar",
+        (UiLanguage::PtBr, "select_tooltip") => "Selecionar vários snapshots para apagar",
+        (UiLanguage::PtBr, "cancel") => "Cancelar",
+        (UiLanguage::PtBr, "delete_selected") => "Apagar selecionados",
         (UiLanguage::PtBr, "create_snapshot") => "Não foi possível criar o snapshot",
         (UiLanguage::PtBr, "stage_rollback") => "Não foi possível preparar o rollback",
         (UiLanguage::PtBr, "read_rollback_state") => "Não foi possível ler o estado do rollback",
@@ -169,6 +178,11 @@ fn tr(key: &'static str) -> &'static str {
         (_, "unlock_snapshot") => "Failed to unlock snapshot",
         (_, "lock_snapshot") => "Failed to lock snapshot",
         (_, "delete_snapshot") => "Failed to delete snapshot",
+        (_, "delete_snapshots") => "Failed to delete snapshots",
+        (_, "select") => "Select",
+        (_, "select_tooltip") => "Select multiple snapshots to delete",
+        (_, "cancel") => "Cancel",
+        (_, "delete_selected") => "Delete selected",
         (_, "create_snapshot") => "Failed to create snapshot",
         (_, "stage_rollback") => "Failed to stage rollback",
         (_, "read_rollback_state") => "Failed to read rollback state",
@@ -392,6 +406,15 @@ fn build_ui(app: &libadwaita::Application) {
     filter_row.append(&filter_managed);
     filter_row.append(&filter_external);
 
+    // Multi-select toggle for batch deletion of managed snapshots.
+    let select_toggle = gtk4::ToggleButton::builder()
+        .label(tr("select"))
+        .tooltip_text(tr("select_tooltip"))
+        .hexpand(true)
+        .halign(gtk4::Align::End)
+        .build();
+    filter_row.append(&select_toggle);
+
     // Time range filter row
     let tr_today = gtk4::ToggleButton::builder().label("Today").build();
     let tr_7 = gtk4::ToggleButton::builder()
@@ -476,6 +499,9 @@ fn build_ui(app: &libadwaita::Application) {
         "Use Refresh to list Btrfs subvolumes",
     );
 
+    // Batch-action bar, revealed only while multi-select mode is active.
+    let (bulk_bar, bulk_delete_btn, bulk_cancel_btn) = build_bulk_action_bar();
+
     let content = gtk4::Box::builder()
         .orientation(gtk4::Orientation::Vertical)
         .spacing(12)
@@ -490,6 +516,7 @@ fn build_ui(app: &libadwaita::Application) {
     content.append(&browse_row);
     content.append(&filter_row);
     content.append(&time_range_row);
+    content.append(&bulk_bar);
     content.append(&list_scroll);
 
     let root = gtk4::Box::builder()
@@ -515,6 +542,10 @@ fn build_ui(app: &libadwaita::Application) {
         summary_counts: summary_counts.clone(),
         summary_filters: summary_filters.clone(),
         spinner: spinner.clone(),
+        select_mode: Rc::new(Cell::new(false)),
+        selected: Rc::new(RefCell::new(HashSet::new())),
+        bulk_bar: bulk_bar.clone(),
+        bulk_delete_btn: bulk_delete_btn.clone(),
     };
 
     // Wire filter chips to re-render without issuing new Btrfs commands.
@@ -609,6 +640,15 @@ fn build_ui(app: &libadwaita::Application) {
             search_for_refresh.text().to_string(),
         );
     });
+
+    wire_select_mode(
+        &ui_state,
+        &list,
+        &search,
+        &filesystem_selector,
+        &select_toggle,
+        &bulk_cancel_btn,
+    );
 
     let state_for_rollback_status = ui_state.clone();
     rollback_status.connect_clicked(move |btn| {
@@ -786,6 +826,12 @@ fn load_mountpoint(list: gtk4::ListBox, state: UiState, query: String, mountpoin
             Ok(response) => match response.data {
                 Some(data) => match serde_json::from_value::<SubvolumeInventory>(data) {
                     Ok(inventory) => {
+                        if inventory.reconciled_external_deletions > 0 {
+                            show_toast(
+                                &state.toast_overlay,
+                                &reconciled_message(inventory.reconciled_external_deletions),
+                            );
+                        }
                         *state.inventory.borrow_mut() = Some(inventory.clone());
                         render_inventory(&list, &inventory, &query, state);
                     }
@@ -923,6 +969,151 @@ fn snapshot_subtitle(
 
 fn show_toast(toast_overlay: &libadwaita::ToastOverlay, message: &str) {
     toast_overlay.add_toast(libadwaita::Toast::new(message));
+}
+
+fn reconciled_message(count: usize) -> String {
+    match ui_language() {
+        UiLanguage::PtBr => {
+            format!("{count} snapshot(s) removido(s) por fora foram reconciliados")
+        }
+        UiLanguage::En => format!("Reconciled {count} snapshot(s) deleted outside the app"),
+    }
+}
+
+// Build the revealer-wrapped batch-action bar. Returns (revealer, delete, cancel).
+fn build_bulk_action_bar() -> (gtk4::Revealer, gtk4::Button, gtk4::Button) {
+    let bulk_delete_btn = gtk4::Button::builder()
+        .label(tr("delete_selected"))
+        .css_classes(["destructive-action"])
+        .sensitive(false)
+        .build();
+    let bulk_cancel_btn = gtk4::Button::builder().label(tr("cancel")).build();
+    let bulk_box = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(8)
+        .halign(gtk4::Align::End)
+        .build();
+    bulk_box.append(&bulk_cancel_btn);
+    bulk_box.append(&bulk_delete_btn);
+    let bulk_bar = gtk4::Revealer::builder()
+        .transition_type(gtk4::RevealerTransitionType::SlideDown)
+        .reveal_child(false)
+        .child(&bulk_box)
+        .build();
+    (bulk_bar, bulk_delete_btn, bulk_cancel_btn)
+}
+
+// Wire the multi-select toggle, cancel button, and batch-delete button. Kept out
+// of build_ui to bound that function's size.
+fn wire_select_mode(
+    ui_state: &UiState,
+    list: &gtk4::ListBox,
+    search: &gtk4::SearchEntry,
+    filesystem_selector: &gtk4::ComboBoxText,
+    select_toggle: &gtk4::ToggleButton,
+    bulk_cancel_btn: &gtk4::Button,
+) {
+    // Toggling select mode: reveal the batch bar and re-render so managed
+    // snapshot rows grow a checkbox. Toggling off clears the selection.
+    let list_for_select = list.clone();
+    let search_for_select = search.clone();
+    let state_for_select = ui_state.clone();
+    select_toggle.connect_toggled(move |btn| {
+        let active = btn.is_active();
+        state_for_select.select_mode.set(active);
+        state_for_select.selected.borrow_mut().clear();
+        state_for_select.bulk_bar.set_reveal_child(active);
+        update_bulk_bar(&state_for_select);
+        if let Some(inventory) = state_for_select.inventory.borrow().as_ref() {
+            render_inventory(
+                &list_for_select,
+                inventory,
+                search_for_select.text().as_str(),
+                state_for_select.clone(),
+            );
+        }
+    });
+
+    let cancel_toggle = select_toggle.clone();
+    bulk_cancel_btn.connect_clicked(move |_| {
+        cancel_toggle.set_active(false);
+    });
+
+    let list_for_bulk = list.clone();
+    let search_for_bulk = search.clone();
+    let selector_for_bulk = filesystem_selector.clone();
+    let state_for_bulk = ui_state.clone();
+    let toggle_for_bulk = select_toggle.clone();
+    ui_state.bulk_delete_btn.connect_clicked(move |btn| {
+        let paths: Vec<PathBuf> = state_for_bulk.selected.borrow().iter().cloned().collect();
+        if paths.is_empty() {
+            return;
+        }
+        let Some(mountpoint) = state_for_bulk
+            .inventory
+            .borrow()
+            .as_ref()
+            .map(|inv| inv.mountpoint.clone())
+        else {
+            return;
+        };
+        let dialog = libadwaita::AlertDialog::builder()
+            .heading(tr("delete_selected"))
+            .body(format!(
+                "Permanently delete {} snapshot(s)? This cannot be undone.",
+                paths.len()
+            ))
+            .build();
+        dialog.add_response("cancel", tr("cancel"));
+        dialog.add_response("delete", tr("delete_selected"));
+        dialog.set_response_appearance("delete", libadwaita::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+
+        let list_c = list_for_bulk.clone();
+        let search_c = search_for_bulk.clone();
+        let selector_c = selector_for_bulk.clone();
+        let state_c = state_for_bulk.clone();
+        let toggle_c = toggle_for_bulk.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response != "delete" {
+                return;
+            }
+            let mountpoint = mountpoint.clone();
+            let paths = paths.clone();
+            let list_c = list_c.clone();
+            let search_c = search_c.clone();
+            let selector_c = selector_c.clone();
+            let state_c = state_c.clone();
+            let toggle_c = toggle_c.clone();
+            state_c.spinner.start();
+            glib::MainContext::default().spawn_local(async move {
+                let result = handle_privileged_async(HelperRequest::DeleteManagedSnapshots {
+                    mountpoint,
+                    subvolume_paths: paths,
+                })
+                .await;
+                state_c.spinner.stop();
+                match result {
+                    Ok(response) => show_toast(&state_c.toast_overlay, &response.message),
+                    Err(err) => show_error_toast(&state_c.toast_overlay, "delete_snapshots", &err),
+                }
+                // Leave select mode and refresh from disk so pruned rows and any
+                // partial failures are reflected accurately.
+                toggle_c.set_active(false);
+                discover_and_load(list_c, state_c, selector_c, search_c.text().to_string());
+            });
+        });
+        let window = btn.root().and_downcast::<gtk4::Window>();
+        dialog.present(window.as_ref());
+    });
+}
+
+fn update_bulk_bar(state: &UiState) {
+    let count = state.selected.borrow().len();
+    state.bulk_delete_btn.set_sensitive(count > 0);
+    state
+        .bulk_delete_btn
+        .set_label(&format!("{} ({count})", tr("delete_selected")));
 }
 
 fn check_pending_rollback(window: &gtk4::Window, toast_overlay: &libadwaita::ToastOverlay) {
@@ -1862,6 +2053,24 @@ fn render_inventory(
         .filter(|s| !is_snapshot_kind(&s.kind))
         .filter(|s| matches_query(s, query))
         .collect();
+
+    // Keep the batch selection in sync with what is actually visible: a snapshot
+    // hidden by a filter/search/time-range change must not stay queued for
+    // deletion behind the user's back. Only visible managed snapshots can be
+    // (re)checked, so drop everything else from the selection.
+    if state.select_mode.get() {
+        let visible_managed: HashSet<PathBuf> = snapshots
+            .iter()
+            .filter(|s| s.managed)
+            .map(|s| s.path.clone())
+            .collect();
+        state
+            .selected
+            .borrow_mut()
+            .retain(|path| visible_managed.contains(path));
+        update_bulk_bar(&state);
+    }
+
     update_inventory_summary(
         &state,
         inventory,
@@ -2032,6 +2241,25 @@ fn render_snapshot_row(
         .subtitle(subtitle)
         .build();
     row.add_prefix(&snapshot_prefix_icon(snapshot, is_mounted));
+    // In multi-select mode, managed snapshots gain a checkbox for batch deletion.
+    if state.select_mode.get() && snapshot.managed {
+        let check = gtk4::CheckButton::builder()
+            .valign(gtk4::Align::Center)
+            .active(state.selected.borrow().contains(&snapshot.path))
+            .build();
+        let selected = state.selected.clone();
+        let path = snapshot.path.clone();
+        let state_for_check = state.clone();
+        check.connect_toggled(move |c| {
+            if c.is_active() {
+                selected.borrow_mut().insert(path.clone());
+            } else {
+                selected.borrow_mut().remove(&path);
+            }
+            update_bulk_bar(&state_for_check);
+        });
+        row.add_prefix(&check);
+    }
     let browse = gtk4::Button::builder()
         .icon_name("folder-open-symbolic")
         .tooltip_text("Browse read-only")
