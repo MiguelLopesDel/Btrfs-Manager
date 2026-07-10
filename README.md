@@ -67,6 +67,23 @@ cd packaging/arch
 makepkg -si
 ```
 
+### Install/update from your local checkout (pacman-managed)
+
+To install a pacman-managed package built from your **local** repository (the
+committed state of the current branch) — handy for running your own changes on
+the host with clean upgrades and removal — use:
+
+```sh
+bash scripts/pkg-install.sh          # build current branch HEAD + install/upgrade
+bash scripts/pkg-install.sh remove   # uninstall (pacman -Rns)
+```
+
+To update, commit (or `git pull`) and run `scripts/pkg-install.sh` again;
+pacman upgrades the package in place. This reuses `packaging/arch/PKGBUILD`,
+only pointing its source at the local checkout, so the build/package logic
+stays in one place. For quick, unmanaged dev installs (including uncommitted
+changes) use `scripts/dev-install.sh` instead.
+
 Installed GUI builds use only the system D-Bus helper service for Btrfs/system
 operations. They do not call `pkexec` or the helper CLI directly. For repository
 development only, set `BTRFS_MANAGER_DEV_LOCAL_HELPER=1` to use the in-process
