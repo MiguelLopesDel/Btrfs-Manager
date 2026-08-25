@@ -1,5 +1,10 @@
 /target/
 /.cache/
+# makepkg build outputs
+/packaging/arch/src/
+/packaging/arch/pkg/
+/packaging/arch/btrfs-manager-git/
+/packaging/arch/*.pkg.tar.zst
 .env
 *.sqlite
 *.db
