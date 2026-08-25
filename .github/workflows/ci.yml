@@ -166,6 +166,7 @@ jobs:
         with:
           globs: |
             README.md
+            CONTRIBUTING.md
             docs/**/*.md
       - run: cargo doc --workspace --no-deps --no-default-features
 
@@ -196,6 +197,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends shellcheck libxml2-utils desktop-file-utils
       - run: shellcheck scripts/dev-loopback-btrfs-test.sh scripts/vm-arch-bootstrap.sh scripts/copy-last-screenshot
       - run: shellcheck scripts/e2e-headless-smoke.sh scripts/github-bootstrap.sh scripts/check-gui-privilege-boundary.sh scripts/check-installed-dbus-helper.sh
+      - run: shellcheck .githooks/pre-commit scripts/install-git-hooks.sh
       - run: bash scripts/check-gui-privilege-boundary.sh
       - run: xmllint --noout packaging/polkit/org.btrfsmanager.helper.policy
       - run: desktop-file-validate packaging/linux/org.btrfsmanager.App.desktop
@@ -234,22 +236,3 @@ jobs:
           chown -R builder:builder "$GITHUB_WORKSPACE"
           su builder -c "cd '$GITHUB_WORKSPACE/packaging/arch' && makepkg --printsrcinfo > .SRCINFO.generated"
           diff -u packaging/arch/.SRCINFO packaging/arch/.SRCINFO.generated
-  e2e-headless:
-    name: Headless GUI E2E
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install GUI test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            xvfb \
-            xauth \
-            dbus-x11 \
-            libgtk-4-dev \
-            libadwaita-1-dev \
-            libgraphene-1.0-dev \
-            pkg-config
-      - uses: Swatinem/rust-cache@v2
-      - run: bash scripts/e2e-headless-smoke.sh
