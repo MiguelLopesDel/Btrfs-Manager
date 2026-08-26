@@ -71,6 +71,7 @@ pub(crate) fn append_icon_row(list: &gtk4::ListBox, title: &str, subtitle: &str,
             .valign(gtk4::Align::Center)
             .build(),
     );
+    row.set_selectable(false);
     list.append(&row);
 }
 

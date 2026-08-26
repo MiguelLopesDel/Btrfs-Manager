@@ -1,7 +1,7 @@
 //! Shared UI state and the filter enums that drive inventory rendering.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -48,6 +48,15 @@ pub(crate) struct UiState {
     pub(crate) spinner: gtk4::Spinner,
     pub(crate) select_mode: Rc<Cell<bool>>,
     pub(crate) selected: Rc<RefCell<HashSet<PathBuf>>>,
+    /// Maps each currently-rendered, selectable snapshot row to its path, so
+    /// the native GtkListBox multi-selection (ctrl/shift-click, ctrl+A,
+    /// shift+arrows) can be translated back into `selected`. Rebuilt on every
+    /// render_inventory pass.
+    pub(crate) row_paths: Rc<RefCell<HashMap<gtk4::ListBoxRow, PathBuf>>>,
+    /// Set while render_inventory clears and rebuilds the list, so the row
+    /// teardown/rebuild doesn't fire connect_selected_rows_changed and
+    /// clobber `selected` with a transient, incomplete GTK selection state.
+    pub(crate) suppress_selection_signal: Rc<Cell<bool>>,
     pub(crate) bulk_bar: gtk4::Revealer,
     pub(crate) bulk_delete_btn: gtk4::Button,
 }

@@ -17,7 +17,7 @@ mod state;
 mod widgets;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use btrfs_manager_helper::{FilesystemDiscovery, HelperRequest};
@@ -131,6 +131,8 @@ fn build_ui_state(
         spinner: controls.spinner.clone(),
         select_mode: Rc::new(Cell::new(false)),
         selected: Rc::new(RefCell::new(HashSet::new())),
+        row_paths: Rc::new(RefCell::new(HashMap::new())),
+        suppress_selection_signal: Rc::new(Cell::new(false)),
         bulk_bar: bulk_bar.clone(),
         bulk_delete_btn: bulk_delete_btn.clone(),
     }
@@ -193,7 +195,7 @@ fn build_browse_row() -> BrowseRow {
 /// The scrollable inventory list, seeded with the initial placeholder status.
 fn build_list_view() -> (gtk4::ListBox, gtk4::ScrolledWindow) {
     let list = gtk4::ListBox::builder()
-        .selection_mode(gtk4::SelectionMode::Single)
+        .selection_mode(gtk4::SelectionMode::None)
         .css_classes(["boxed-list"])
         .vexpand(true)
         .build();

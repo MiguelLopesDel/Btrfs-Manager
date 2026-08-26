@@ -1,6 +1,7 @@
 //! Multi-select mode: the batch-action bar and its wiring for deleting
 //! several managed snapshots at once.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use btrfs_manager_helper::HelperRequest;
@@ -56,6 +57,7 @@ pub(crate) fn wire_select_mode(
     bulk_cancel_btn: &gtk4::Button,
 ) {
     wire_select_toggle(ui_state, list, search, select_toggle);
+    wire_row_selection_sync(ui_state, list);
 
     let cancel_toggle = select_toggle.clone();
     bulk_cancel_btn.connect_clicked(move |_| {
@@ -65,8 +67,10 @@ pub(crate) fn wire_select_mode(
     wire_bulk_delete_button(ui_state, list, search, filesystem_selector, select_toggle);
 }
 
-/// Toggling select mode: reveal the batch bar and re-render so managed
-/// snapshot rows grow a checkbox. Toggling off clears the selection.
+/// Toggling select mode: switch the list's GTK selection mode (which is what
+/// actually gives us ctrl/shift-click, ctrl+A, and shift-arrow range select
+/// for free), reveal the batch bar, and re-render. Toggling off clears the
+/// selection.
 fn wire_select_toggle(
     ui_state: &UiState,
     list: &gtk4::ListBox,
@@ -81,6 +85,14 @@ fn wire_select_toggle(
         state_for_select.select_mode.set(active);
         state_for_select.selected.borrow_mut().clear();
         state_for_select.bulk_bar.set_reveal_child(active);
+        list_for_select.set_selection_mode(if active {
+            gtk4::SelectionMode::Multiple
+        } else {
+            gtk4::SelectionMode::None
+        });
+        if !active {
+            list_for_select.unselect_all();
+        }
         update_bulk_bar(&state_for_select);
         if let Some(inventory) = state_for_select.inventory.borrow().as_ref() {
             render_inventory(
@@ -90,6 +102,29 @@ fn wire_select_toggle(
                 state_for_select.clone(),
             );
         }
+    });
+}
+
+/// The single source of truth for `selected` while in select mode: whatever
+/// GTK reports as the list's selected rows (via click, ctrl-click,
+/// shift-click, shift-arrow, or ctrl+A), translated back to snapshot paths
+/// through `row_paths`. Suppressed during render_inventory's clear/rebuild —
+/// see `UiState::suppress_selection_signal`.
+fn wire_row_selection_sync(ui_state: &UiState, list: &gtk4::ListBox) {
+    let state = ui_state.clone();
+    list.connect_selected_rows_changed(move |list| {
+        if state.suppress_selection_signal.get() {
+            return;
+        }
+        let row_paths = state.row_paths.borrow();
+        let selected: HashSet<PathBuf> = list
+            .selected_rows()
+            .into_iter()
+            .filter_map(|row| row_paths.get(&row).cloned())
+            .collect();
+        drop(row_paths);
+        *state.selected.borrow_mut() = selected;
+        update_bulk_bar(&state);
     });
 }
 

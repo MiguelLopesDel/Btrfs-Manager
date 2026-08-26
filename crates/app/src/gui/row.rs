@@ -9,7 +9,6 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
-use super::bulk::update_bulk_bar;
 use super::discovery::load_mountpoint;
 use super::errors::{show_toast, user_error};
 use super::helper_client::{handle_privileged, handle_privileged_async};
@@ -41,34 +40,26 @@ pub(crate) fn render_snapshot_row(
         .subtitle(subtitle)
         .build();
     row.add_prefix(&snapshot_prefix_icon(snapshot, is_mounted));
-    if state.select_mode.get() && snapshot.managed {
-        attach_selection_checkbox(&row, snapshot, &state);
+    if snapshot.managed {
+        state
+            .row_paths
+            .borrow_mut()
+            .insert(row.clone().upcast(), snapshot.path.clone());
+    } else {
+        // Only managed snapshots can be batch-deleted — external ones must
+        // never be selectable via click/ctrl+A/shift-click.
+        row.set_selectable(false);
     }
     attach_browse_actions(&row, snapshot, &mountpoint, target, is_mounted, &state);
     if snapshot.managed {
         attach_managed_actions(&row, list, snapshot, &mountpoint, &state);
     }
     list.append(&row);
-}
-
-/// In multi-select mode, managed snapshots gain a checkbox for batch deletion.
-fn attach_selection_checkbox(row: &libadwaita::ActionRow, snapshot: &Subvolume, state: &UiState) {
-    let check = gtk4::CheckButton::builder()
-        .valign(gtk4::Align::Center)
-        .active(state.selected.borrow().contains(&snapshot.path))
-        .build();
-    let selected = state.selected.clone();
-    let path = snapshot.path.clone();
-    let state_for_check = state.clone();
-    check.connect_toggled(move |c| {
-        if c.is_active() {
-            selected.borrow_mut().insert(path.clone());
-        } else {
-            selected.borrow_mut().remove(&path);
-        }
-        update_bulk_bar(&state_for_check);
-    });
-    row.add_prefix(&check);
+    // Restore GTK's row selection after a rebuild (filter/search change while
+    // in select mode) so previously-checked rows stay visually selected.
+    if snapshot.managed && state.selected.borrow().contains(&snapshot.path) {
+        list.select_row(Some(&row));
+    }
 }
 
 fn attach_browse_actions(

@@ -28,7 +28,12 @@ pub(crate) fn render_inventory(
     query: &str,
     state: UiState,
 ) {
+    // Suppressed while we tear down and rebuild rows below, so the row
+    // destruction/recreation doesn't fire connect_selected_rows_changed with
+    // a transient, incomplete GTK selection and clobber `state.selected`.
+    state.suppress_selection_signal.set(true);
     clear_list(list);
+    state.row_paths.borrow_mut().clear();
     if inventory.subvolumes.is_empty() {
         state
             .summary_scope
@@ -40,6 +45,7 @@ pub(crate) fn render_inventory(
             "No subvolumes found",
             &inventory.mountpoint.display().to_string(),
         );
+        state.suppress_selection_signal.set(false);
         return;
     }
 
@@ -95,6 +101,7 @@ pub(crate) fn render_inventory(
     }
 
     render_subvolume_rows(list, inventory, &subvolumes, &state);
+    state.suppress_selection_signal.set(false);
 }
 
 /// Keep the batch selection in sync with what is actually visible: a snapshot
@@ -218,6 +225,8 @@ fn render_subvolume_rows(
                 .valign(gtk4::Align::Center)
                 .build(),
         );
+        // Subvolumes aren't snapshots — never selectable for batch delete.
+        row.set_selectable(false);
 
         let snapshot_btn = gtk4::Button::builder()
             .icon_name("camera-photo-symbolic")
