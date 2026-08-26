@@ -17,6 +17,11 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    # Data license (not code) covering Mozilla's CA certificate bundle,
+    # transitively pulled in by rustls-platform-verifier (ureq's update
+    # check). Permissive, no copyleft; the standard license every pure-Rust
+    # HTTPS client ships this data under (reqwest, hyper-rustls, ...).
+    "CDLA-Permissive-2.0",
     "GPL-3.0",
     "GPL-3.0-or-later",
     "ISC",

@@ -7,7 +7,7 @@ rust-version.workspace = true
 
 [features]
 default = []
-gui = ["dep:gtk4", "dep:gio", "dep:libadwaita"]
+gui = ["dep:gtk4", "dep:gio", "dep:libadwaita", "dep:ureq"]
 
 [dependencies]
 anyhow.workspace = true
@@ -23,3 +23,13 @@ chrono.workspace = true
 zbus.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# Uses the OS's own trust store (platform-verifier) rather than bundling
+# Mozilla's CA list (the default `rustls` feature's webpki-roots), which is
+# both more appropriate for a Linux system utility and avoids a CDLA-licensed
+# dependency our license allowlist doesn't cover.
+ureq = { version = "3.4", optional = true, default-features = false, features = [
+    "rustls-no-provider",
+    "_ring",
+    "platform-verifier",
+    "gzip",
+] }

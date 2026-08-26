@@ -129,6 +129,14 @@ Em protótipo (implementado, pendente validação completa):
   `$XDG_STATE_HOME`) no startup e mostra toast — decisão deliberada de não
   notificar da sessão root do timer systemd direto para a sessão gráfica do
   usuário (superfície de ataque desnecessária nesse limite).
+- [~] Aviso de versão nova disponível: `crates/app/build.rs` embute o SHA do
+  commit; no startup a GUI compara contra `main` via
+  `GET /compare/{sha}...main` da API do GitHub (TLS verificado pelo trust
+  store nativo do SO, não pelo bundle da Mozilla — evita depender de
+  CDLA-Permissive-2.0 sem necessidade real). Banner mostra "N commits à
+  frente" com botão que copia `bash scripts/pkg-install.sh` — não auto-aplica:
+  o pacote é gerenciado pelo pacman, e a GUI nunca deve sobrescrever arquivos
+  que o pacman administra. `BTRFS_MANAGER_NO_UPDATE_CHECK=1` desliga.
 
 Não iniciado de forma pronta:
 

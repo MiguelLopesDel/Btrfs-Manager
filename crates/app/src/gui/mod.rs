@@ -15,6 +15,7 @@ mod mounts;
 mod notifications;
 mod row;
 mod state;
+mod update_check;
 mod usage;
 mod widgets;
 
@@ -40,6 +41,7 @@ use inventory::render_inventory;
 use mounts::{managed_mount_roots_exist, unmount_session_mounts};
 use notifications::check_recent_policy_runs;
 use state::{SnapshotFilter, TimeRangeFilter, UiState, ViewMode};
+use update_check::{UpdateBanner, build_update_banner, check_for_update};
 use widgets::set_status_row;
 
 pub fn run() {
@@ -74,12 +76,14 @@ fn build_ui(app: &libadwaita::Application) {
 
     let (list, list_scroll) = build_list_view();
     let (bulk_bar, bulk_delete_btn, bulk_cancel_btn) = build_bulk_action_bar();
+    let update_banner = build_update_banner();
 
     let toast_overlay = assemble_content(
         &controls,
         &summary,
         &browse_row.widget,
         &filters,
+        &update_banner,
         &bulk_bar,
         &list_scroll,
     );
@@ -104,7 +108,14 @@ fn build_ui(app: &libadwaita::Application) {
 
     let window = build_window(app, &toast_overlay, &ui_state);
 
-    run_startup_tasks(&window, &ui_state, &list, &filesystem_selector, &search);
+    run_startup_tasks(
+        &window,
+        &ui_state,
+        &list,
+        &filesystem_selector,
+        &search,
+        &update_banner,
+    );
 }
 
 /// Construct the shared `UiState`, wiring in the widgets built earlier so
@@ -225,6 +236,7 @@ fn assemble_content(
     summary: &SummaryPanel,
     browse_row: &gtk4::Box,
     filters: &filters::FilterControls,
+    update_banner: &UpdateBanner,
     bulk_bar: &gtk4::Revealer,
     list_scroll: &gtk4::ScrolledWindow,
 ) -> libadwaita::ToastOverlay {
@@ -243,6 +255,7 @@ fn assemble_content(
         .margin_end(18)
         .vexpand(true)
         .build();
+    content.append(&update_banner.revealer);
     content.append(&page_title);
     content.append(&summary.widget);
     content.append(browse_row);
@@ -294,6 +307,7 @@ fn run_startup_tasks(
     list: &gtk4::ListBox,
     filesystem_selector: &gtk4::ComboBoxText,
     search: &gtk4::SearchEntry,
+    update_banner: &UpdateBanner,
 ) {
     if managed_mount_roots_exist() {
         match handle_privileged(HelperRequest::CleanupManagedMounts) {
@@ -310,6 +324,7 @@ fn run_startup_tasks(
 
     check_pending_rollback(window.upcast_ref(), &ui_state.toast_overlay);
     check_recent_policy_runs(ui_state);
+    check_for_update(update_banner);
 
     discover_and_load(
         list.clone(),
