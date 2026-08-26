@@ -116,6 +116,19 @@ Em protótipo (implementado, pendente validação completa):
 - [~] Unlock/lock de snapshots gerenciados com confirmação e estado visual.
 - [~] Timeline com filtros de período, agrupamento por dia/hora e busca por data.
 - [~] Documentação técnica HTML.
+- [~] Nome único de snapshot (`{label}-{YYYYMMDD-HHMMSS}`, hora local) para
+  criação manual e agendada — antes eram dois formatos divergentes em UTC.
+  Snapshots já existentes mantêm o nome antigo; a GUI reconhece os dois.
+- [~] Subtítulo da linha esconde o diretório de UUID da política nos paths de
+  snapshot agendado.
+- [~] Relatório de uso de espaço por snapshot sob demanda (`SnapshotDiskUsage`,
+  reaproveita a classe Polkit de leitura `ACTION_DISCOVERY`, sem superfície de
+  privilégio nova) via `btrfs filesystem du -s --raw`.
+- [~] Aviso de execução de política perdida: a GUI compara `ListPolicyRunLogs`
+  de todas as políticas contra a última checagem (arquivo local em
+  `$XDG_STATE_HOME`) no startup e mostra toast — decisão deliberada de não
+  notificar da sessão root do timer systemd direto para a sessão gráfica do
+  usuário (superfície de ataque desnecessária nesse limite).
 
 Não iniciado de forma pronta:
 
