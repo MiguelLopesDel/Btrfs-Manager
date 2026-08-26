@@ -173,6 +173,17 @@ pub struct PolicyRunLog {
     pub error: Option<String>,
 }
 
+/// Space accounted to a single subvolume/snapshot by `btrfs filesystem du`.
+/// `exclusive_bytes` is what deleting it alone would actually free;
+/// `shared_bytes` is extent data shared with other subvolumes (e.g. an
+/// unmodified snapshot shares almost everything with its source).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiskUsage {
+    pub total_bytes: u64,
+    pub exclusive_bytes: u64,
+    pub shared_bytes: u64,
+}
+
 impl Snapshot {
     pub fn is_managed(&self) -> bool {
         matches!(self.origin, SnapshotOrigin::Managed)

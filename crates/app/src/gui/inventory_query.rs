@@ -1,10 +1,11 @@
 //! Snapshot/subvolume query helpers: kind checks, search matching, time-range
 //! matching, and the date/hour grouping + label logic used when rendering.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use btrfs_manager_core::{Subvolume, SubvolumeKind};
 use chrono::{DateTime, Datelike, Local, Timelike, Utc};
+use uuid::Uuid;
 
 use super::state::{TimeRangeFilter, ViewMode};
 
@@ -182,6 +183,22 @@ pub(crate) fn snapshot_display_title(snapshot: &Subvolume) -> String {
     }
 }
 
+/// Drop raw policy-UUID path segments (e.g. the "<uuid>" in
+/// "@btrfs-manager/<uuid>/home-20260825-143207") before showing a path to the
+/// user — a bare UUID directory means nothing to them.
+fn prettify_path(path: &Path) -> String {
+    path.components()
+        .filter(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_none_or(|segment| Uuid::parse_str(segment).is_err())
+        })
+        .collect::<PathBuf>()
+        .display()
+        .to_string()
+}
+
 pub(crate) fn snapshot_subtitle(
     id: u64,
     path: &Path,
@@ -190,7 +207,7 @@ pub(crate) fn snapshot_subtitle(
     mount_target: &Path,
     tags: &[String],
 ) -> String {
-    let mut parts: Vec<String> = vec![format!("ID {id}"), path.display().to_string()];
+    let mut parts: Vec<String> = vec![format!("ID {id}"), prettify_path(path)];
     if unlocked {
         parts.push("Writable".into());
     }

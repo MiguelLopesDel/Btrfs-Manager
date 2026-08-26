@@ -3,7 +3,8 @@ use crate::validate::{validate_path, validate_relative_btrfs_path};
 use crate::{CommandRunner, Helper, HelperError, HelperResponse};
 use btrfs_manager_core::models::Snapshot;
 use btrfs_manager_core::models::{SnapshotOrigin, SnapshotState, SubvolumeId};
-use chrono::Utc;
+use btrfs_manager_core::naming::snapshot_name_from_path;
+use chrono::{Local, Utc};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -123,14 +124,7 @@ impl<R: CommandRunner> Helper<R> {
         let top = self.ensure_top_level_mount(&mountpoint)?;
         self.ensure_manager_subvolume_at_top_level(&top)?;
         let source = top.join(&subvolume_path);
-        let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S");
-        let source_label = subvolume_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.trim_start_matches('@'))
-            .filter(|s| !s.is_empty())
-            .unwrap_or("root");
-        let dest_name = format!("managed-{source_label}-{timestamp}");
+        let dest_name = snapshot_name_from_path(&subvolume_path, Local::now());
         let dest_parent = top.join(&snapshot_root);
         if !dest_parent.exists() {
             self.runner.run(

@@ -20,6 +20,7 @@ mod retention;
 mod rollback;
 mod snapshot;
 mod subvolume;
+mod usage;
 mod validate;
 
 #[derive(Debug, Error)]
@@ -52,6 +53,12 @@ pub enum HelperRequest {
     RunDiagnostics,
     ListSubvolumes {
         mountpoint: PathBuf,
+    },
+    /// Space used by a single subvolume/snapshot (`btrfs filesystem du -s`),
+    /// fetched on demand rather than eagerly for every listed row.
+    SnapshotDiskUsage {
+        mountpoint: PathBuf,
+        subvolume_path: PathBuf,
     },
     CreateSnapshot {
         source: PathBuf,

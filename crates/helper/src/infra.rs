@@ -165,6 +165,10 @@ impl<R: CommandRunner> Helper<R> {
             HelperRequest::DiscoverFilesystems => self.discover_filesystems(),
             HelperRequest::RunDiagnostics => self.run_diagnostics(),
             HelperRequest::ListSubvolumes { mountpoint } => self.list_subvolumes(mountpoint),
+            HelperRequest::SnapshotDiskUsage {
+                mountpoint,
+                subvolume_path,
+            } => self.snapshot_disk_usage_impl(mountpoint, subvolume_path),
             HelperRequest::CreateSnapshot {
                 source,
                 destination,

@@ -118,7 +118,8 @@ pub fn action_for_request(request: &HelperRequest) -> &'static str {
     match request {
         HelperRequest::DiscoverFilesystems
         | HelperRequest::RunDiagnostics
-        | HelperRequest::ListSubvolumes { .. } => ACTION_DISCOVERY,
+        | HelperRequest::ListSubvolumes { .. }
+        | HelperRequest::SnapshotDiskUsage { .. } => ACTION_DISCOVERY,
         HelperRequest::CreateSnapshot { .. }
         | HelperRequest::DeleteSnapshot { .. }
         | HelperRequest::SetSnapshotReadOnly { .. }
@@ -180,6 +181,13 @@ mod tests {
         );
         assert_eq!(
             action_for_request(&HelperRequest::RunDiagnostics),
+            ACTION_DISCOVERY
+        );
+        assert_eq!(
+            action_for_request(&HelperRequest::SnapshotDiskUsage {
+                mountpoint: PathBuf::from("/"),
+                subvolume_path: PathBuf::from("@snapshots/home-20260825-143207"),
+            }),
             ACTION_DISCOVERY
         );
         assert_eq!(

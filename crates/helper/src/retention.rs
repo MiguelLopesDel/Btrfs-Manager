@@ -5,9 +5,10 @@ use crate::{
     CommandRunner, Helper, HelperError, HelperResponse, RetentionRunFailure, RetentionRunOutcome,
 };
 use btrfs_manager_core::models::{Snapshot, SnapshotOrigin, SnapshotPolicy, SnapshotState};
+use btrfs_manager_core::naming::snapshot_name_from_path;
 use btrfs_manager_core::retention::{RetentionPolicy, retention_keep_set};
 use btrfs_manager_core::{PolicyRunLog, PolicyRunStatus, RetentionPreview};
-use chrono::Utc;
+use chrono::{Local, Utc};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -195,11 +196,7 @@ impl<R: CommandRunner> Helper<R> {
         let snap_dir_abs = top.join(policy_snapshot_dir(policy));
         std::fs::create_dir_all(&snap_dir_abs)?;
 
-        let dest_name = format!(
-            "{}-{}",
-            sanitize_snapshot_label(&policy.source_path),
-            Utc::now().format("%Y%m%d-%H%M%S")
-        );
+        let dest_name = snapshot_name_from_path(&policy.source_path, Local::now());
         let dest_abs = snap_dir_abs.join(&dest_name);
         let source_abs = top.join(&policy.source_path);
 
@@ -332,11 +329,8 @@ pub(crate) fn retention_preview_for_policy(
     }
     RetentionPreview {
         policy_id: policy.id,
-        next_snapshot_path: policy_snapshot_dir(policy).join(format!(
-            "{}-{}",
-            sanitize_snapshot_label(&policy.source_path),
-            Utc::now().format("%Y%m%d-%H%M%S")
-        )),
+        next_snapshot_path: policy_snapshot_dir(policy)
+            .join(snapshot_name_from_path(&policy.source_path, Local::now())),
         delete,
         keep,
     }
@@ -347,21 +341,4 @@ pub(crate) fn retention_preview_for_policy(
 // top-level mount point.
 pub(crate) fn policy_snapshot_dir(policy: &SnapshotPolicy) -> PathBuf {
     policy.snapshot_root.join(policy.id.to_string())
-}
-
-fn sanitize_snapshot_label(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("subvolume")
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
 }

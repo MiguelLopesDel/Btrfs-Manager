@@ -126,6 +126,11 @@ const TRANSLATIONS: &[(&str, &str, &str)] = &[
         "Failed to delete snapshots",
         "Não foi possível apagar os snapshots",
     ),
+    (
+        "disk_usage",
+        "Failed to read disk usage",
+        "Não foi possível ler o uso de espaço",
+    ),
     ("select", "Select", "Selecionar"),
     (
         "select_tooltip",

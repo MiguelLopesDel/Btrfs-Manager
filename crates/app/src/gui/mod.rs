@@ -12,8 +12,10 @@ mod i18n;
 mod inventory;
 mod inventory_query;
 mod mounts;
+mod notifications;
 mod row;
 mod state;
+mod usage;
 mod widgets;
 
 use std::cell::{Cell, RefCell};
@@ -36,6 +38,7 @@ use helper_client::handle_privileged;
 use i18n::tr;
 use inventory::render_inventory;
 use mounts::{managed_mount_roots_exist, unmount_session_mounts};
+use notifications::check_recent_policy_runs;
 use state::{SnapshotFilter, TimeRangeFilter, UiState, ViewMode};
 use widgets::set_status_row;
 
@@ -306,6 +309,7 @@ fn run_startup_tasks(
     }
 
     check_pending_rollback(window.upcast_ref(), &ui_state.toast_overlay);
+    check_recent_policy_runs(ui_state);
 
     discover_and_load(
         list.clone(),

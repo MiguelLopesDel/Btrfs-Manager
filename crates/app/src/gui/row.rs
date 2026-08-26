@@ -16,6 +16,7 @@ use super::i18n::tr;
 use super::inventory_query::{snapshot_display_title, snapshot_subtitle};
 use super::mounts::{browse_mount_target, browse_snapshot_readonly};
 use super::state::UiState;
+use super::usage::build_usage_button;
 use super::widgets::{linked_button_group, snapshot_prefix_icon};
 
 pub(crate) fn render_snapshot_row(
@@ -205,6 +206,7 @@ fn attach_managed_actions(
     state: &UiState,
 ) {
     let managed_actions = linked_button_group();
+    managed_actions.append(&build_usage_button(row, snapshot, mountpoint, state));
     let (unlock_btn, lock_btn) = build_lock_buttons(row, list, snapshot, mountpoint, state);
     managed_actions.append(&unlock_btn);
     managed_actions.append(&lock_btn);
