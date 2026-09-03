@@ -1,3 +1,4 @@
+pub mod checksum;
 pub mod compare;
 pub mod models;
 pub mod naming;
@@ -7,6 +8,7 @@ pub mod retention;
 pub mod rollback;
 pub mod update_check;
 
+pub use checksum::sha256_hex;
 pub use compare::{CompareEntry, CompareKind, compare_dirs_shallow};
 pub use models::{
     BootIntegration, DiskUsage, Filesystem, FilesystemId, PolicyRunLog, PolicyRunStatus,
@@ -19,4 +21,7 @@ pub use parser::{
 };
 pub use retention::{RetentionClass, RetentionPolicy, retention_keep_set};
 pub use rollback::{RollbackPlan, RollbackPrompt, RollbackStatus};
-pub use update_check::{UpdateStatus, parse_compare_response};
+pub use update_check::{
+    LatestRelease, ReleaseAsset, UpdateStatus, find_checksum, parse_compare_response,
+    parse_latest_release,
+};
