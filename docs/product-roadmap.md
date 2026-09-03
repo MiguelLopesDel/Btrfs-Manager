@@ -129,14 +129,19 @@ Em protótipo (implementado, pendente validação completa):
   `$XDG_STATE_HOME`) no startup e mostra toast — decisão deliberada de não
   notificar da sessão root do timer systemd direto para a sessão gráfica do
   usuário (superfície de ataque desnecessária nesse limite).
-- [~] Aviso de versão nova disponível: `crates/app/build.rs` embute o SHA do
-  commit; no startup a GUI compara contra `main` via
-  `GET /compare/{sha}...main` da API do GitHub (TLS verificado pelo trust
-  store nativo do SO, não pelo bundle da Mozilla — evita depender de
-  CDLA-Permissive-2.0 sem necessidade real). Banner mostra "N commits à
-  frente" com botão que copia `bash scripts/pkg-install.sh` — não auto-aplica:
-  o pacote é gerenciado pelo pacman, e a GUI nunca deve sobrescrever arquivos
-  que o pacman administra. `BTRFS_MANAGER_NO_UPDATE_CHECK=1` desliga.
+- [~] Atualização com um clique: sem conta na AUR disponível (criação de
+  contas desativada), `.github/workflows/release.yml` builda o pacote pacman
+  de verdade (`.pkg.tar.zst` + `checksums.txt`) e publica como GitHub Release
+  a cada tag `v*`. `crates/app/build.rs` embute o SHA do commit; no startup a
+  GUI compara contra a última release via `GET /compare/{sha}...{tag}` (TLS
+  pelo trust store nativo do SO, não o bundle da Mozilla — evita depender de
+  CDLA-Permissive-2.0 sem necessidade real). Banner "Atualizar" baixa o
+  pacote, verifica o SHA-256 contra `checksums.txt`, e chama a nova ação
+  privilegiada `HelperRequest::ApplySelfUpdate` (Polkit
+  `org.btrfsmanager.helper.selfupdate`, mesmo nível de `.manage`/`.rollback`)
+  — o helper **revalida o checksum de novo, independente da GUI**, antes de
+  rodar `pacman -U`. Um clique, uma senha, sem terminal.
+  `BTRFS_MANAGER_NO_UPDATE_CHECK=1` desliga a checagem.
 
 Não iniciado de forma pronta:
 
