@@ -240,6 +240,10 @@ impl<R: CommandRunner> Helper<R> {
                 wayland_display,
                 xdg_runtime_dir,
             } => self.open_file_manager(path, display, wayland_display, xdg_runtime_dir),
+            HelperRequest::ApplySelfUpdate {
+                package_path,
+                expected_sha256,
+            } => self.apply_self_update_impl(package_path, expected_sha256),
         }
     }
 }

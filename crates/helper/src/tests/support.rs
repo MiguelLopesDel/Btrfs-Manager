@@ -101,6 +101,28 @@ pub(crate) fn with_top_level_fixture<T>(
     })
 }
 
+/// Points `XDG_RUNTIME_DIR` at a fresh temp dir for the duration of `f`, so
+/// tests can exercise the `/run/user/<uid>/...`-shaped paths this crate
+/// trusts (see `validate::runtime_dir_from_env`) without touching the real
+/// `/run/user/<uid>` on the machine running the tests.
+pub(crate) fn with_runtime_dir<T>(f: impl FnOnce(&Path) -> T) -> T {
+    with_test_db(|| {
+        let runtime_dir =
+            std::env::temp_dir().join(format!("btrfs-manager-runtime-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        // SAFETY: with_test_db already serializes all callers via DB_LOCK.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", &runtime_dir);
+        }
+        let result = f(&runtime_dir);
+        unsafe {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+        std::fs::remove_dir_all(&runtime_dir).ok();
+        result
+    })
+}
+
 pub(crate) fn find_snap(store: &StateStore, id: Uuid) -> Snapshot {
     store
         .list_all_managed_snapshots()

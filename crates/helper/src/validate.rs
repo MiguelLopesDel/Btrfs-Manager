@@ -47,6 +47,36 @@ pub(crate) fn validate_managed_mount_target_with_roots(
     }
 }
 
+/// The downloaded update package must sit directly inside an `update/`
+/// subdirectory of one of `roots` (the same per-user runtime directories
+/// `infra.rs::managed_mount_roots` already trusts — `/run/user/{caller_uid}`
+/// plus whatever `runtime_dir_from_env()` resolves, which is how tests
+/// substitute a temp directory instead of the real `/run/user/<uid>`), with
+/// a filename matching the package this project actually publishes —
+/// rejects traversal, symlink-by-name tricks, and pointing the helper at an
+/// arbitrary file on disk.
+pub(crate) fn validate_update_package_path(
+    path: &Path,
+    roots: &[PathBuf],
+) -> Result<(), HelperError> {
+    let name_ok = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with("btrfs-manager-git-") && name.ends_with(".pkg.tar.zst")
+        });
+    let dir_ok = path
+        .parent()
+        .is_some_and(|parent| roots.iter().any(|root| parent == root.join("update")));
+    if !dir_ok || !name_ok {
+        return Err(HelperError::InvalidPolicy(format!(
+            "update package path rejected: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn runtime_dir_from_env() -> Option<PathBuf> {
     if let Some(value) = std::env::var_os("XDG_RUNTIME_DIR") {
         return Some(PathBuf::from(value));

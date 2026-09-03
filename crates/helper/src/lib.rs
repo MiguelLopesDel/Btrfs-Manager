@@ -18,6 +18,7 @@ mod mount_ops;
 mod policy;
 mod retention;
 mod rollback;
+mod selfupdate;
 mod snapshot;
 mod subvolume;
 mod usage;
@@ -168,6 +169,15 @@ pub enum HelperRequest {
         display: String,
         wayland_display: String,
         xdg_runtime_dir: String,
+    },
+    /// Install a downloaded update package via `pacman -U`. `package_path`
+    /// must sit under the caller's `/run/user/{uid}/btrfs-manager/update/`
+    /// directory (only reachable via authenticated D-Bus, never CLI); the
+    /// helper independently re-hashes the file and rejects it unless it
+    /// matches `expected_sha256` — never trusts the GUI's own check.
+    ApplySelfUpdate {
+        package_path: PathBuf,
+        expected_sha256: String,
     },
 }
 

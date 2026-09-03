@@ -9,5 +9,6 @@ mod mount_tests;
 mod policy_tests;
 mod retention_tests;
 mod rollback_tests;
+mod selfupdate_tests;
 mod snapshot_tests;
 mod subvolume_tests;

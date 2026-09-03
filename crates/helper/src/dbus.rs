@@ -11,6 +11,7 @@ pub const ACTION_DISCOVERY: &str = "org.btrfsmanager.helper.discovery";
 pub const ACTION_MANAGE: &str = "org.btrfsmanager.helper.manage";
 pub const ACTION_ROLLBACK: &str = "org.btrfsmanager.helper.rollback";
 pub const ACTION_POLICY_READ: &str = "org.btrfsmanager.helper.policy.read";
+pub const ACTION_SELFUPDATE: &str = "org.btrfsmanager.helper.selfupdate";
 
 pub struct HelperService {
     connection: Connection,
@@ -145,6 +146,7 @@ pub fn action_for_request(request: &HelperRequest) -> &'static str {
         HelperRequest::UpsertSnapshotPolicy { .. }
         | HelperRequest::SetSnapshotPolicyEnabled { .. }
         | HelperRequest::RunRetentionPolicy { .. } => ACTION_MANAGE,
+        HelperRequest::ApplySelfUpdate { .. } => ACTION_SELFUPDATE,
     }
 }
 
@@ -239,6 +241,13 @@ mod tests {
         assert_eq!(
             action_for_request(&HelperRequest::ListSnapshotPolicies),
             ACTION_POLICY_READ
+        );
+        assert_eq!(
+            action_for_request(&HelperRequest::ApplySelfUpdate {
+                package_path: PathBuf::from("/run/user/1000/btrfs-manager/update/pkg.pkg.tar.zst"),
+                expected_sha256: "abc".into(),
+            }),
+            ACTION_SELFUPDATE
         );
     }
 }
