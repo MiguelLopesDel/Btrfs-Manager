@@ -9,7 +9,7 @@ use btrfs_manager_core::models::{
 };
 use chrono::Utc;
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub(crate) struct RecordingRunner {
@@ -70,6 +70,35 @@ pub(crate) fn with_test_db<T>(f: impl FnOnce() -> T) -> T {
     }
     std::fs::remove_file(&db_path).ok();
     result
+}
+
+/// Sets up a fake top-level Btrfs mount (`BTRFS_MANAGER_TOPLEVEL_DIR`
+/// pointing at a fresh temp dir with a `@btrfs-manager/state` subdir) plus
+/// its `StateStore`, and tears both down afterward. Shared by every test
+/// that exercises managed-snapshot delete/lock paths against a real
+/// filesystem layout instead of just the in-memory test DB.
+pub(crate) fn with_top_level_fixture<T>(
+    prefix: &str,
+    f: impl FnOnce(&Path, &StateStore) -> T,
+) -> T {
+    with_test_db(|| {
+        let test_root =
+            std::env::temp_dir().join(format!("btrfs-manager-{prefix}-{}", Uuid::new_v4()));
+        let fs_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let top = test_root.join(fs_uuid);
+        std::fs::create_dir_all(top.join("@btrfs-manager/state")).unwrap();
+        // SAFETY: with_test_db already serializes all callers via DB_LOCK.
+        unsafe {
+            std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
+        }
+        let store = StateStore::open_at(top.join("@btrfs-manager/state/state.db")).unwrap();
+        let result = f(&top, &store);
+        unsafe {
+            std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
+        }
+        std::fs::remove_dir_all(&test_root).ok();
+        result
+    })
 }
 
 pub(crate) fn find_snap(store: &StateStore, id: Uuid) -> Snapshot {
@@ -293,4 +322,30 @@ pub(crate) fn managed_snapshot(path: &str, state: SnapshotState) -> Snapshot {
         origin: SnapshotOrigin::Managed,
         state,
     }
+}
+
+/// `managed_snapshot`, but also creates the subvolume directory under `top`
+/// and inserts the DB row — the combination almost every delete/lock test
+/// needs to set up a snapshot that's actually there to be found.
+pub(crate) fn place_managed_snapshot(
+    store: &StateStore,
+    top: &Path,
+    path: &str,
+    state: SnapshotState,
+) -> Snapshot {
+    let snapshot = managed_snapshot(path, state);
+    std::fs::create_dir_all(top.join(&snapshot.path)).unwrap();
+    store.insert_managed_snapshot(None, &snapshot).unwrap();
+    snapshot
+}
+
+/// A placed rollback-anchor snapshot at a fixed path, for the tests that
+/// check the anchor is protected from manual delete/lock/unlock.
+pub(crate) fn place_rollback_anchor(store: &StateStore, top: &Path) -> Snapshot {
+    place_managed_snapshot(
+        store,
+        top,
+        "@btrfs-manager/anchor",
+        SnapshotState::RollbackAnchor,
+    )
 }

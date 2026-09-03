@@ -39,28 +39,25 @@ impl StateStore {
         Ok(snapshots)
     }
 
-    pub(crate) fn find_managed_snapshot_id_by_path(
+    /// Returns the full row (state included) so callers can check
+    /// state-based invariants — e.g. never delete or unlock a rollback
+    /// anchor — before mutating anything.
+    pub(crate) fn find_managed_snapshot_by_path(
         &self,
         path: &Path,
-    ) -> Result<Uuid, HelperError> {
-        let result: Option<String> = self
-            .connection
+    ) -> Result<Snapshot, HelperError> {
+        self.connection
             .query_row(
-                "SELECT id FROM managed_snapshots WHERE path = ?1",
+                "SELECT id, source_subvolume_id, path, created_at, tags_json, origin_tool, state FROM managed_snapshots WHERE path = ?1",
                 params![path.display().to_string()],
-                |row| row.get(0),
+                snapshot_from_row,
             )
-            .optional()?;
-        result
+            .optional()?
             .ok_or_else(|| {
                 HelperError::InvalidPolicy(format!(
                     "no managed snapshot at path {}",
                     path.display()
                 ))
-            })
-            .and_then(|id| {
-                id.parse::<Uuid>()
-                    .map_err(|e| HelperError::InvalidPolicy(format!("invalid uuid in db: {e}")))
             })
     }
 

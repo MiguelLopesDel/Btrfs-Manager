@@ -48,7 +48,14 @@ impl<R: CommandRunner> Helper<R> {
         subvolume_path: &Path,
     ) -> Result<(), HelperError> {
         validate_relative_btrfs_path(subvolume_path, "managed snapshot path")?;
-        let id = store.find_managed_snapshot_id_by_path(subvolume_path)?;
+        let snapshot = store.find_managed_snapshot_by_path(subvolume_path)?;
+        if snapshot.state == SnapshotState::RollbackAnchor {
+            return Err(HelperError::InvalidPolicy(format!(
+                "{} is a rollback anchor and cannot be deleted directly — revert or commit the rollback first",
+                subvolume_path.display()
+            )));
+        }
+        let id = snapshot.id;
         let abs_path = top.join(subvolume_path);
         if abs_path.exists() {
             self.runner.run(
@@ -175,7 +182,14 @@ impl<R: CommandRunner> Helper<R> {
         validate_path(&mountpoint)?;
         validate_relative_btrfs_path(&subvol_path, "managed snapshot path")?;
         let store = self.state_store_for_mountpoint(&mountpoint)?;
-        let id = store.find_managed_snapshot_id_by_path(&subvol_path)?;
+        let snapshot = store.find_managed_snapshot_by_path(&subvol_path)?;
+        if snapshot.state == SnapshotState::RollbackAnchor {
+            return Err(HelperError::InvalidPolicy(format!(
+                "{} is a rollback anchor and cannot be locked/unlocked — its state is managed by the rollback lifecycle",
+                subvol_path.display()
+            )));
+        }
+        let id = snapshot.id;
         let top = self.ensure_top_level_mount(&mountpoint)?;
         let abs_path = top.join(&subvol_path);
         let value = if readonly { "true" } else { "false" };

@@ -1,6 +1,7 @@
 use crate::state::StateStore;
 use crate::tests::support::{
-    RecordingRunner, RetentionRunner, find_snap, managed_snapshot, with_test_db,
+    RecordingRunner, RetentionRunner, find_snap, place_managed_snapshot, place_rollback_anchor,
+    with_test_db, with_top_level_fixture,
 };
 use crate::{Helper, HelperError, HelperRequest};
 use btrfs_manager_core::models::{Snapshot, SnapshotOrigin, SnapshotState, SubvolumeId};
@@ -124,24 +125,9 @@ fn set_managed_readonly_rejects_path_not_in_db() {
 
 #[test]
 fn delete_managed_snapshots_removes_all_subvolumes_and_db_rows() {
-    with_test_db(|| {
-        let test_root =
-            std::env::temp_dir().join(format!("btrfs-manager-batch-delete-{}", Uuid::new_v4()));
-        let fs_uuid = "550e8400-e29b-41d4-a716-446655440000";
-        let top = test_root.join(fs_uuid);
-        std::fs::create_dir_all(top.join("@btrfs-manager/state")).unwrap();
-        unsafe {
-            std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
-        }
-
-        let state_db = top.join("@btrfs-manager/state/state.db");
-        let store = StateStore::open_at(state_db.clone()).unwrap();
-        let a = managed_snapshot("@btrfs-manager/managed-a", SnapshotState::ReadOnly);
-        let b = managed_snapshot("@btrfs-manager/managed-b", SnapshotState::ReadOnly);
-        std::fs::create_dir_all(top.join(&a.path)).unwrap();
-        std::fs::create_dir_all(top.join(&b.path)).unwrap();
-        store.insert_managed_snapshot(None, &a).unwrap();
-        store.insert_managed_snapshot(None, &b).unwrap();
+    with_top_level_fixture("batch-delete", |top, store| {
+        let a = place_managed_snapshot(store, top, "@btrfs-manager/a", SnapshotState::ReadOnly);
+        let b = place_managed_snapshot(store, top, "@btrfs-manager/b", SnapshotState::ReadOnly);
 
         let helper = Helper::new(RetentionRunner {
             calls: RefCell::new(Vec::new()),
@@ -160,41 +146,23 @@ fn delete_managed_snapshots_removes_all_subvolumes_and_db_rows() {
         );
         assert!(!top.join(&a.path).exists());
         assert!(!top.join(&b.path).exists());
-        let after = StateStore::open_at(state_db).unwrap();
         assert!(
-            after.list_all_managed_snapshots().unwrap().is_empty(),
+            store.list_all_managed_snapshots().unwrap().is_empty(),
             "all DB rows should be removed"
         );
-
-        unsafe {
-            std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
-        }
-        std::fs::remove_dir_all(test_root).ok();
     });
 }
 
 #[test]
 fn delete_managed_snapshots_reports_partial_failure() {
-    with_test_db(|| {
-        let test_root =
-            std::env::temp_dir().join(format!("btrfs-manager-batch-partial-{}", Uuid::new_v4()));
-        let fs_uuid = "550e8400-e29b-41d4-a716-446655440000";
-        let top = test_root.join(fs_uuid);
-        std::fs::create_dir_all(top.join("@btrfs-manager/state")).unwrap();
-        unsafe {
-            std::env::set_var("BTRFS_MANAGER_TOPLEVEL_DIR", &test_root);
-        }
-
-        let state_db = top.join("@btrfs-manager/state/state.db");
-        let store = StateStore::open_at(state_db.clone()).unwrap();
-        let good = managed_snapshot("@btrfs-manager/managed-good", SnapshotState::ReadOnly);
-        std::fs::create_dir_all(top.join(&good.path)).unwrap();
-        store.insert_managed_snapshot(None, &good).unwrap();
+    with_top_level_fixture("batch-partial", |top, store| {
+        let good =
+            place_managed_snapshot(store, top, "@btrfs-manager/good", SnapshotState::ReadOnly);
 
         let helper = Helper::new(RetentionRunner {
             calls: RefCell::new(Vec::new()),
         });
-        // Second path has no DB row → find_managed_snapshot_id_by_path fails.
+        // Second path has no DB row → find_managed_snapshot_by_path fails.
         let response = helper
             .handle(HelperRequest::DeleteManagedSnapshots {
                 mountpoint: PathBuf::from("/mnt"),
@@ -207,13 +175,85 @@ fn delete_managed_snapshots_reports_partial_failure() {
         assert_eq!(failed, 1, "exactly one path should fail");
         // The valid one was still deleted.
         assert!(!top.join(&good.path).exists());
-        let after = StateStore::open_at(state_db).unwrap();
-        assert!(after.list_all_managed_snapshots().unwrap().is_empty());
+        assert!(store.list_all_managed_snapshots().unwrap().is_empty());
+    });
+}
 
-        unsafe {
-            std::env::remove_var("BTRFS_MANAGER_TOPLEVEL_DIR");
-        }
-        std::fs::remove_dir_all(test_root).ok();
+#[test]
+fn delete_managed_snapshot_rejects_rollback_anchor() {
+    with_top_level_fixture("anchor-delete", |top, store| {
+        let anchor = place_rollback_anchor(store, top);
+
+        let helper = Helper::new(RetentionRunner {
+            calls: RefCell::new(Vec::new()),
+        });
+        let err = helper
+            .handle(HelperRequest::DeleteManagedSnapshot {
+                mountpoint: PathBuf::from("/mnt"),
+                subvolume_path: anchor.path.clone(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, HelperError::InvalidPolicy(_)));
+        // Neither the subvolume nor its DB row were touched.
+        assert!(top.join(&anchor.path).exists());
+        assert_eq!(store.list_all_managed_snapshots().unwrap().len(), 1);
+    });
+}
+
+#[test]
+fn delete_managed_snapshots_batch_skips_rollback_anchor_but_deletes_the_rest() {
+    with_top_level_fixture("anchor-batch", |top, store| {
+        let anchor = place_rollback_anchor(store, top);
+        let ordinary = place_managed_snapshot(
+            store,
+            top,
+            "@btrfs-manager/ordinary",
+            SnapshotState::ReadOnly,
+        );
+
+        let helper = Helper::new(RetentionRunner {
+            calls: RefCell::new(Vec::new()),
+        });
+        let response = helper
+            .handle(HelperRequest::DeleteManagedSnapshots {
+                mountpoint: PathBuf::from("/mnt"),
+                subvolume_paths: vec![anchor.path.clone(), ordinary.path.clone()],
+            })
+            .unwrap();
+
+        assert!(
+            !response.ok,
+            "batch containing the anchor must report not-ok"
+        );
+        let failed = response.data.unwrap()["failed"].as_array().unwrap().len();
+        assert_eq!(failed, 1, "only the anchor should fail");
+        // The anchor survives; the ordinary snapshot was still deleted.
+        assert!(top.join(&anchor.path).exists());
+        assert!(!top.join(&ordinary.path).exists());
+        assert_eq!(store.list_all_managed_snapshots().unwrap().len(), 1);
+    });
+}
+
+#[test]
+fn set_managed_snapshot_ro_rejects_rollback_anchor() {
+    with_top_level_fixture("anchor-lock", |top, store| {
+        let anchor = place_rollback_anchor(store, top);
+
+        let helper = Helper::new(RetentionRunner {
+            calls: RefCell::new(Vec::new()),
+        });
+        let err = helper
+            .handle(HelperRequest::SetManagedSnapshotReadOnly {
+                mountpoint: PathBuf::from("/mnt"),
+                subvol_path: anchor.path.clone(),
+                readonly: false,
+            })
+            .unwrap_err();
+        assert!(matches!(err, HelperError::InvalidPolicy(_)));
+        assert!(matches!(
+            find_snap(store, anchor.id).state,
+            SnapshotState::RollbackAnchor
+        ));
     });
 }
 
