@@ -1,206 +1,210 @@
 {
+  "limit_violations": {
+    "files_over_limit": [],
+    "functions_over_limit": []
+  },
   "metrics": {
     "duplication": {
-      "duplicate_blocks": 49,
-      "duplicate_ratio_percent": 0.681,
-      "duplicate_windows": 51,
-      "total_windows": 7489,
+      "duplicate_blocks": 42,
+      "duplicate_ratio_percent": 0.5214,
+      "duplicate_windows": 46,
+      "total_windows": 8822,
       "window_size": 8
     },
-    "line_coverage_percent": 46.0445,
-    "max_file_lines": 3540,
-    "max_function_complexity": 61,
-    "max_function_lines": 437,
-    "rust_file_count": 14,
-    "rust_function_count": 255,
-    "rust_logical_lines": 7587,
-    "rust_total_lines": 8223
+    "line_coverage_percent": 66.0764,
+    "max_file_lines": 449,
+    "max_function_complexity": 18,
+    "max_function_lines": 99,
+    "rust_file_count": 57,
+    "rust_function_count": 349,
+    "rust_logical_lines": 9221,
+    "rust_total_lines": 10161
   },
   "schema": 1,
   "top": {
     "largest_files": [
       {
-        "file": "crates/helper/src/lib.rs",
-        "lines": 3540
+        "file": "crates/app/src/gui/row.rs",
+        "lines": 449
       },
       {
-        "file": "crates/app/src/gui.rs",
-        "lines": 2952
+        "file": "crates/app/src/gui/dialogs/rollback.rs",
+        "lines": 415
       },
       {
-        "file": "crates/helper/src/state.rs",
-        "lines": 549
+        "file": "crates/helper/src/rollback.rs",
+        "lines": 398
       },
       {
-        "file": "crates/helper/src/dbus.rs",
-        "lines": 228
+        "file": "crates/app/src/gui/dialogs/policy.rs",
+        "lines": 378
       },
       {
-        "file": "crates/core/src/models.rs",
-        "lines": 207
+        "file": "crates/helper/src/tests/retention_tests.rs",
+        "lines": 371
       },
       {
-        "file": "crates/helper/src/main.rs",
-        "lines": 175
+        "file": "crates/helper/src/retention.rs",
+        "lines": 367
       },
       {
-        "file": "crates/core/src/retention.rs",
-        "lines": 121
+        "file": "crates/app/src/gui/mod.rs",
+        "lines": 356
       },
       {
-        "file": "crates/core/src/parser.rs",
-        "lines": 117
+        "file": "crates/helper/src/subvolume.rs",
+        "lines": 330
       },
       {
-        "file": "crates/core/src/compare.rs",
-        "lines": 77
+        "file": "crates/helper/src/tests/rollback_tests.rs",
+        "lines": 323
       },
       {
-        "file": "crates/app/src/main.rs",
-        "lines": 74
+        "file": "crates/helper/src/diagnostics.rs",
+        "lines": 316
       }
     ],
     "longest_functions": [
       {
-        "complexity": 18,
-        "file": "crates/app/src/gui.rs",
-        "line": 265,
-        "lines": 437,
-        "name": "build_ui"
-      },
-      {
-        "complexity": 21,
-        "file": "crates/app/src/gui.rs",
-        "line": 2009,
-        "lines": 353,
-        "name": "render_snapshot_row"
-      },
-      {
-        "complexity": 61,
-        "file": "crates/helper/src/lib.rs",
-        "line": 388,
-        "lines": 263,
-        "name": "handle"
-      },
-      {
-        "complexity": 15,
-        "file": "crates/app/src/gui.rs",
-        "line": 2598,
-        "lines": 255,
-        "name": "open_policy_dialog"
-      },
-      {
-        "complexity": 19,
-        "file": "crates/app/src/gui.rs",
-        "line": 1814,
-        "lines": 194,
-        "name": "render_inventory"
-      },
-      {
         "complexity": 7,
-        "file": "crates/app/src/gui.rs",
-        "line": 1127,
-        "lines": 156,
+        "file": "crates/app/src/gui/row.rs",
+        "line": 246,
+        "lines": 99,
+        "name": "build_lock_buttons"
+      },
+      {
+        "complexity": 17,
+        "file": "crates/helper/src/subvolume.rs",
+        "line": 16,
+        "lines": 88,
+        "name": "list_subvolumes"
+      },
+      {
+        "complexity": 12,
+        "file": "crates/helper/src/main.rs",
+        "line": 87,
+        "lines": 81,
+        "name": "main"
+      },
+      {
+        "complexity": 3,
+        "file": "crates/helper/src/tests/retention_tests.rs",
+        "line": 73,
+        "lines": 80,
+        "name": "run_scheduled_retention_scenario"
+      },
+      {
+        "complexity": 3,
+        "file": "crates/app/src/gui/dialogs/rollback.rs",
+        "line": 108,
+        "lines": 79,
         "name": "open_rollback_status_window"
       },
       {
-        "complexity": 10,
-        "file": "crates/helper/src/lib.rs",
-        "line": 652,
-        "lines": 141,
-        "name": "run_diagnostics"
+        "complexity": 2,
+        "file": "crates/helper/src/tests/retention_tests.rs",
+        "line": 213,
+        "lines": 79,
+        "name": "scheduled_retention_run_removes_stale_db_entries_for_missing_snapshots"
       },
       {
-        "complexity": 27,
-        "file": "crates/helper/src/lib.rs",
-        "line": 1551,
-        "lines": 133,
-        "name": "run_retention_policy_inner"
+        "complexity": 1,
+        "file": "crates/helper/src/tests/rollback_tests.rs",
+        "line": 50,
+        "lines": 79,
+        "name": "stage_and_verify_initial"
       },
       {
-        "complexity": 8,
-        "file": "crates/helper/src/lib.rs",
-        "line": 2993,
-        "lines": 121,
-        "name": "scheduled_retention_run_creates_snapshot_deletes_expired_and_logs_result"
+        "complexity": 2,
+        "file": "crates/app/src/gui/dialogs/policy.rs",
+        "line": 30,
+        "lines": 78,
+        "name": "open_policy_dialog"
       },
       {
-        "complexity": 4,
-        "file": "crates/app/src/gui.rs",
-        "line": 84,
-        "lines": 119,
-        "name": "tr"
+        "complexity": 2,
+        "file": "crates/helper/src/infra.rs",
+        "line": 163,
+        "lines": 78,
+        "name": "handle"
+      },
+      {
+        "complexity": 6,
+        "file": "crates/helper/src/tests/retention_tests.rs",
+        "line": 294,
+        "lines": 78,
+        "name": "scheduled_retention_run_removes_created_snapshot_when_db_insert_fails"
       }
     ],
     "most_complex_functions": [
       {
-        "complexity": 61,
-        "file": "crates/helper/src/lib.rs",
-        "line": 388,
-        "lines": 263,
-        "name": "handle"
-      },
-      {
-        "complexity": 27,
-        "file": "crates/helper/src/lib.rs",
-        "line": 1551,
-        "lines": 133,
-        "name": "run_retention_policy_inner"
-      },
-      {
-        "complexity": 25,
-        "file": "crates/helper/src/lib.rs",
-        "line": 2719,
-        "lines": 55,
-        "name": "run"
-      },
-      {
-        "complexity": 23,
-        "file": "crates/helper/src/lib.rs",
-        "line": 1127,
-        "lines": 93,
+        "complexity": 18,
+        "file": "crates/helper/src/rollback.rs",
+        "line": 15,
+        "lines": 75,
         "name": "stage_rollback"
       },
       {
-        "complexity": 21,
-        "file": "crates/app/src/gui.rs",
-        "line": 2009,
-        "lines": 353,
-        "name": "render_snapshot_row"
-      },
-      {
-        "complexity": 19,
-        "file": "crates/app/src/gui.rs",
-        "line": 1814,
-        "lines": 194,
-        "name": "render_inventory"
-      },
-      {
-        "complexity": 18,
-        "file": "crates/app/src/gui.rs",
-        "line": 265,
-        "lines": 437,
-        "name": "build_ui"
+        "complexity": 17,
+        "file": "crates/helper/src/subvolume.rs",
+        "line": 16,
+        "lines": 88,
+        "name": "list_subvolumes"
       },
       {
         "complexity": 16,
-        "file": "crates/helper/src/lib.rs",
-        "line": 1265,
+        "file": "crates/helper/src/rollback.rs",
+        "line": 182,
         "lines": 41,
         "name": "revert_rollback"
       },
       {
         "complexity": 15,
-        "file": "crates/app/src/gui.rs",
-        "line": 2598,
-        "lines": 255,
-        "name": "open_policy_dialog"
+        "file": "crates/helper/src/tests/support.rs",
+        "line": 89,
+        "lines": 30,
+        "name": "run"
       },
       {
-        "complexity": 15,
-        "file": "crates/helper/src/lib.rs",
-        "line": 2682,
-        "lines": 30,
+        "complexity": 14,
+        "file": "crates/helper/src/state/rollback.rs",
+        "line": 29,
+        "lines": 50,
+        "name": "get_pending_rollback"
+      },
+      {
+        "complexity": 14,
+        "file": "crates/helper/src/state/policy.rs",
+        "line": 62,
+        "lines": 26,
+        "name": "policy_from_row"
+      },
+      {
+        "complexity": 14,
+        "file": "crates/helper/src/tests/support.rs",
+        "line": 199,
+        "lines": 22,
+        "name": "run"
+      },
+      {
+        "complexity": 14,
+        "file": "crates/helper/src/state/policy.rs",
+        "line": 32,
+        "lines": 20,
+        "name": "upsert_policy"
+      },
+      {
+        "complexity": 14,
+        "file": "crates/helper/src/state/log.rs",
+        "line": 42,
+        "lines": 19,
+        "name": "policy_log_from_row"
+      },
+      {
+        "complexity": 13,
+        "file": "crates/helper/src/tests/support.rs",
+        "line": 20,
+        "lines": 32,
         "name": "run"
       }
     ]

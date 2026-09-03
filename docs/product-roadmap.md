@@ -116,6 +116,32 @@ Em protótipo (implementado, pendente validação completa):
 - [~] Unlock/lock de snapshots gerenciados com confirmação e estado visual.
 - [~] Timeline com filtros de período, agrupamento por dia/hora e busca por data.
 - [~] Documentação técnica HTML.
+- [~] Nome único de snapshot (`{label}-{YYYYMMDD-HHMMSS}`, hora local) para
+  criação manual e agendada — antes eram dois formatos divergentes em UTC.
+  Snapshots já existentes mantêm o nome antigo; a GUI reconhece os dois.
+- [~] Subtítulo da linha esconde o diretório de UUID da política nos paths de
+  snapshot agendado.
+- [~] Relatório de uso de espaço por snapshot sob demanda (`SnapshotDiskUsage`,
+  reaproveita a classe Polkit de leitura `ACTION_DISCOVERY`, sem superfície de
+  privilégio nova) via `btrfs filesystem du -s --raw`.
+- [~] Aviso de execução de política perdida: a GUI compara `ListPolicyRunLogs`
+  de todas as políticas contra a última checagem (arquivo local em
+  `$XDG_STATE_HOME`) no startup e mostra toast — decisão deliberada de não
+  notificar da sessão root do timer systemd direto para a sessão gráfica do
+  usuário (superfície de ataque desnecessária nesse limite).
+- [~] Atualização com um clique: sem conta na AUR disponível (criação de
+  contas desativada), `.github/workflows/release.yml` builda o pacote pacman
+  de verdade (`.pkg.tar.zst` + `checksums.txt`) e publica como GitHub Release
+  a cada tag `v*`. `crates/app/build.rs` embute o SHA do commit; no startup a
+  GUI compara contra a última release via `GET /compare/{sha}...{tag}` (TLS
+  pelo trust store nativo do SO, não o bundle da Mozilla — evita depender de
+  CDLA-Permissive-2.0 sem necessidade real). Banner "Atualizar" baixa o
+  pacote, verifica o SHA-256 contra `checksums.txt`, e chama a nova ação
+  privilegiada `HelperRequest::ApplySelfUpdate` (Polkit
+  `org.btrfsmanager.helper.selfupdate`, mesmo nível de `.manage`/`.rollback`)
+  — o helper **revalida o checksum de novo, independente da GUI**, antes de
+  rodar `pacman -U`. Um clique, uma senha, sem terminal.
+  `BTRFS_MANAGER_NO_UPDATE_CHECK=1` desliga a checagem.
 
 Não iniciado de forma pronta:
 

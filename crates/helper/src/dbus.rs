@@ -11,6 +11,7 @@ pub const ACTION_DISCOVERY: &str = "org.btrfsmanager.helper.discovery";
 pub const ACTION_MANAGE: &str = "org.btrfsmanager.helper.manage";
 pub const ACTION_ROLLBACK: &str = "org.btrfsmanager.helper.rollback";
 pub const ACTION_POLICY_READ: &str = "org.btrfsmanager.helper.policy.read";
+pub const ACTION_SELFUPDATE: &str = "org.btrfsmanager.helper.selfupdate";
 
 pub struct HelperService {
     connection: Connection,
@@ -118,13 +119,15 @@ pub fn action_for_request(request: &HelperRequest) -> &'static str {
     match request {
         HelperRequest::DiscoverFilesystems
         | HelperRequest::RunDiagnostics
-        | HelperRequest::ListSubvolumes { .. } => ACTION_DISCOVERY,
+        | HelperRequest::ListSubvolumes { .. }
+        | HelperRequest::SnapshotDiskUsage { .. } => ACTION_DISCOVERY,
         HelperRequest::CreateSnapshot { .. }
         | HelperRequest::DeleteSnapshot { .. }
         | HelperRequest::SetSnapshotReadOnly { .. }
         | HelperRequest::CreateManagedSnapshot { .. }
         | HelperRequest::SetManagedSnapshotReadOnly { .. }
-        | HelperRequest::DeleteManagedSnapshot { .. } => ACTION_MANAGE,
+        | HelperRequest::DeleteManagedSnapshot { .. }
+        | HelperRequest::DeleteManagedSnapshots { .. } => ACTION_MANAGE,
         HelperRequest::MountSnapshot { .. }
         | HelperRequest::MountSubvolume { .. }
         | HelperRequest::MountTopLevel { .. }
@@ -143,6 +146,7 @@ pub fn action_for_request(request: &HelperRequest) -> &'static str {
         HelperRequest::UpsertSnapshotPolicy { .. }
         | HelperRequest::SetSnapshotPolicyEnabled { .. }
         | HelperRequest::RunRetentionPolicy { .. } => ACTION_MANAGE,
+        HelperRequest::ApplySelfUpdate { .. } => ACTION_SELFUPDATE,
     }
 }
 
@@ -182,6 +186,13 @@ mod tests {
             ACTION_DISCOVERY
         );
         assert_eq!(
+            action_for_request(&HelperRequest::SnapshotDiskUsage {
+                mountpoint: PathBuf::from("/"),
+                subvolume_path: PathBuf::from("@snapshots/home-20260825-143207"),
+            }),
+            ACTION_DISCOVERY
+        );
+        assert_eq!(
             action_for_request(&HelperRequest::CreateSnapshot {
                 source: PathBuf::from("/a"),
                 destination: PathBuf::from("/b"),
@@ -207,6 +218,13 @@ mod tests {
             ACTION_MANAGE
         );
         assert_eq!(
+            action_for_request(&HelperRequest::DeleteManagedSnapshots {
+                mountpoint: PathBuf::from("/"),
+                subvolume_paths: vec![PathBuf::from("@btrfs-manager/managed-a")],
+            }),
+            ACTION_MANAGE
+        );
+        assert_eq!(
             action_for_request(&HelperRequest::StageRollback {
                 mountpoint: PathBuf::from("/"),
                 snapshot_path: PathBuf::from("@snapshots/snap"),
@@ -223,6 +241,13 @@ mod tests {
         assert_eq!(
             action_for_request(&HelperRequest::ListSnapshotPolicies),
             ACTION_POLICY_READ
+        );
+        assert_eq!(
+            action_for_request(&HelperRequest::ApplySelfUpdate {
+                package_path: PathBuf::from("/run/user/1000/btrfs-manager/update/pkg.pkg.tar.zst"),
+                expected_sha256: "abc".into(),
+            }),
+            ACTION_SELFUPDATE
         );
     }
 }

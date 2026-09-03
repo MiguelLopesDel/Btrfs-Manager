@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Fast local subset of the CI quality gate. Runs on every `git commit` once
+# installed via scripts/install-git-hooks.sh. Does NOT run the full test suite,
+# coverage, cargo-deny, GUI clippy, or e2e smoke tests — those need network
+# access, GTK dev packages, or minutes to run; they're documented in
+# CONTRIBUTING.md as required before opening a PR, not before every commit.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+echo "pre-commit: cargo fmt --check"
+cargo fmt --all --check
+
+echo "pre-commit: cargo clippy"
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+
+echo "pre-commit: quality gate (file/function size, complexity, duplication)"
+python3 scripts/quality-gate.py check --write-report
+
+echo "pre-commit: all checks passed"

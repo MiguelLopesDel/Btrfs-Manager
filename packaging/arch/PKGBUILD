@@ -1,6 +1,6 @@
 # Maintainer: MiguelLopesDel <btrfsmanager.protegee996@simplelogin.com>
 pkgname=btrfs-manager-git
-pkgver=0.1.0.r48.g1eb6e584882c
+pkgver=0.1.0.r57.g28de3ad2a3ef
 pkgrel=1
 pkgdesc="Modern desktop manager for Btrfs subvolumes and snapshots"
 arch=('x86_64')

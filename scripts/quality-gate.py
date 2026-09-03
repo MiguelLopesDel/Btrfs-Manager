@@ -23,6 +23,14 @@ from typing import Iterable
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = ROOT / "quality" / "baseline.json"
 DEFAULT_REPORT = ROOT / "quality" / "report.json"
+
+# Fixed absolute ceilings (Sonar-way "quality gate" style), not a ratchet against
+# whatever the worst historical value happened to be. These are intentionally NOT
+# stored in quality/baseline.json: `collect --output baseline.json` must never be
+# able to silently loosen them by recording a new worst offender as the new limit.
+FILE_LINE_LIMIT = 450
+FUNCTION_LINE_LIMIT = 100
+FUNCTION_COMPLEXITY_LIMIT = 25
 RUST_FILE_RE = re.compile(r".*\.rs$")
 FN_RE = re.compile(
     r"\b(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\b"
@@ -35,6 +43,9 @@ SKIP_DIRS = {
     ".cache",
     "target",
     "quality",
+    # makepkg build outputs contain a full copy of the repo and must never
+    # count toward source metrics.
+    "packaging",
 }
 TEST_HINTS = (
     "/tests/",
@@ -244,6 +255,35 @@ def collect(lcov_path: Path | None = None) -> dict[str, object]:
         "duplication": duplication_metrics(files),
         "line_coverage_percent": coverage,
     }
+
+    # Every offender over the fixed ceilings, not just the top 10 — this is what the
+    # quality gate itself checks against; `top` below stays a top-10 informational view.
+    files_over_limit = sorted(
+        (
+            {"file": file, "lines": lines}
+            for file, lines in file_line_counts.items()
+            if lines > FILE_LINE_LIMIT
+        ),
+        key=lambda item: item["lines"],
+        reverse=True,
+    )
+    functions_over_limit = sorted(
+        (
+            {
+                "file": function.file,
+                "name": function.name,
+                "line": function.start_line,
+                "lines": function.lines,
+                "complexity": function.complexity,
+            }
+            for function in functions
+            if function.lines > FUNCTION_LINE_LIMIT
+            or function.complexity > FUNCTION_COMPLEXITY_LIMIT
+        ),
+        key=lambda item: (item["lines"], item["complexity"]),
+        reverse=True,
+    )
+
     return {
         "schema": 1,
         "metrics": metrics,
@@ -251,6 +291,10 @@ def collect(lcov_path: Path | None = None) -> dict[str, object]:
             "largest_files": largest_files,
             "most_complex_functions": complex_functions,
             "longest_functions": longest_functions,
+        },
+        "limit_violations": {
+            "files_over_limit": files_over_limit,
+            "functions_over_limit": functions_over_limit,
         },
     }
 
@@ -278,11 +322,12 @@ def metric_at(data: dict[str, object], dotted: str) -> float | int | None:
 
 
 def compare(current: dict[str, object], baseline: dict[str, object]) -> list[str]:
+    # NOTE: max_file_lines / max_function_lines / max_function_complexity are
+    # intentionally NOT ratcheted against baseline.json here — they're enforced as
+    # fixed ceilings by absolute_limit_violations() below instead, so that updating
+    # the baseline (e.g. after a coverage improvement) can never quietly raise them.
     failures: list[str] = []
     lower_or_equal = [
-        "metrics.max_file_lines",
-        "metrics.max_function_lines",
-        "metrics.max_function_complexity",
         "metrics.duplication.duplicate_blocks",
     ]
     greater_or_equal = [
@@ -306,6 +351,26 @@ def compare(current: dict[str, object], baseline: dict[str, object]) -> list[str
             failures.append(f"{metric}: {actual} < baseline {allowed}")
 
     return failures
+
+
+def absolute_limit_violations(report: dict[str, object]) -> list[str]:
+    """Fixed Sonar-way ceilings: every offender, not just the historical worst one."""
+    violations: list[str] = []
+    limits = report.get("limit_violations", {})
+    for item in limits.get("files_over_limit", []):
+        violations.append(
+            f"{item['file']}: {item['lines']} lines > {FILE_LINE_LIMIT} line file limit"
+        )
+    for item in limits.get("functions_over_limit", []):
+        reasons = []
+        if item["lines"] > FUNCTION_LINE_LIMIT:
+            reasons.append(f"{item['lines']} lines > {FUNCTION_LINE_LIMIT}")
+        if item["complexity"] > FUNCTION_COMPLEXITY_LIMIT:
+            reasons.append(f"complexity {item['complexity']} > {FUNCTION_COMPLEXITY_LIMIT}")
+        violations.append(
+            f"{item['file']}:{item['line']} {item['name']}: {', '.join(reasons)}"
+        )
+    return violations
 
 
 def git(args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -390,12 +455,24 @@ def main() -> int:
             write_json(args.report, report)
         baseline = load_json(args.baseline)
         failures = compare(report, baseline)
+        violations = absolute_limit_violations(report)
+
+        ok = True
+        if violations:
+            ok = False
+            print(f"Quality gate failed: {len(violations)} file(s)/function(s) over the fixed limit")
+            print(f"(file > {FILE_LINE_LIMIT} lines, function > {FUNCTION_LINE_LIMIT} lines, "
+                  f"complexity > {FUNCTION_COMPLEXITY_LIMIT}):")
+            for violation in violations:
+                print(f"  - {violation}")
         if failures:
+            ok = False
             print("Quality ratchet failed:")
             for failure in failures:
                 print(f"  - {failure}")
+        if not ok:
             return 1
-        print("Quality ratchet passed.")
+        print("Quality gate passed.")
         return 0
 
     if args.command == "tdd-check":

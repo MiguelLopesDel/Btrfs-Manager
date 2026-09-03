@@ -6,6 +6,7 @@
   },
   "globs": [
     "README.md",
+    "CONTRIBUTING.md",
     "docs/**/*.md"
   ]
 }
