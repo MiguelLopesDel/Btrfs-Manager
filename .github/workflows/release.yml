@@ -1,0 +1,58 @@
+name: Release
+
+# Builds btrfs-manager-git as an installable pacman package and publishes it
+# to a GitHub Release, so users without an AUR account (account creation is
+# currently closed) or a Rust toolchain can install/update with
+# `pacman -U`/the in-app "Atualizar" button instead of building from source.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    name: Build package and publish release
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            btrfs-progs \
+            cargo \
+            dbus \
+            desktop-file-utils \
+            git \
+            github-cli \
+            gtk4 \
+            libadwaita \
+            libxml2 \
+            namcap \
+            pkgconf \
+            polkit \
+            rust \
+            systemd \
+            xdg-utils
+      - name: Build package
+        run: |
+          bash -n packaging/arch/PKGBUILD
+          namcap packaging/arch/PKGBUILD
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c "cd '$GITHUB_WORKSPACE/packaging/arch' && makepkg --noconfirm"
+      - name: Checksum and publish
+        run: |
+          cd packaging/arch
+          pkg=$(ls -- *.pkg.tar.zst)
+          sha256sum "$pkg" > checksums.txt
+          gh release create "$GITHUB_REF_NAME" \
+            "$pkg" checksums.txt \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
