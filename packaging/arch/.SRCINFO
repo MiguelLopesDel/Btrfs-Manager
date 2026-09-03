@@ -1,6 +1,6 @@
 pkgbase = btrfs-manager-git
 	pkgdesc = Modern desktop manager for Btrfs subvolumes and snapshots
-	pkgver = 0.1.0.r48.g1eb6e584882c
+	pkgver = 0.1.0.r76.gbf5e6d9aa7df
 	pkgrel = 1
 	url = https://github.com/MiguelLopesDel/Btrfs-Manager
 	install = btrfs-manager-git.install

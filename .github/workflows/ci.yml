@@ -155,6 +155,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docs:
     name: Documentation
@@ -235,4 +237,12 @@ jobs:
           useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
           su builder -c "cd '$GITHUB_WORKSPACE/packaging/arch' && makepkg --printsrcinfo > .SRCINFO.generated"
-          diff -u packaging/arch/.SRCINFO packaging/arch/.SRCINFO.generated
+          # pkgver is a VCS-package moving target (git rev-list --count + short
+          # hash, computed fresh from HEAD every build) — it legitimately
+          # differs from the committed .SRCINFO on every single commit, so
+          # comparing it here would fail every PR regardless of whether the
+          # package metadata actually changed. Structural fields (deps,
+          # sources, pkgdesc, ...) still get caught.
+          grep -v '^	pkgver = ' packaging/arch/.SRCINFO > .SRCINFO.stripped
+          grep -v '^	pkgver = ' packaging/arch/.SRCINFO.generated > .SRCINFO.generated.stripped
+          diff -u .SRCINFO.stripped .SRCINFO.generated.stripped
