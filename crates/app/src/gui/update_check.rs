@@ -1,14 +1,18 @@
-//! Startup "a newer version exists" banner. Unlike a raw git-checkout app,
-//! this one installs as a pacman package (see packaging/arch/PKGBUILD) — the
-//! GUI must never overwrite files pacman owns, so this only checks and
-//! notifies. Applying the update is left to the user's terminal, same as
-//! every other pacman package.
+//! Startup "a newer version exists" banner. The actual install is still not
+//! something the GUI does on its own file-write authority — it goes through
+//! the helper's `ApplySelfUpdate`, authorized by Polkit (see
+//! `gui::update_apply`), so the GUI never writes to paths pacman owns
+//! directly. This module only checks GitHub and, if there's a newer
+//! release, remembers its download URLs for the "Atualizar" button.
 //!
 //! Best-effort by design: no embedded build SHA, no network, or GitHub
 //! unreachable all just mean "no banner" — this must never interrupt normal
 //! use of the app.
 
-use btrfs_manager_core::UpdateStatus;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use btrfs_manager_core::LatestRelease;
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -16,14 +20,19 @@ use gtk4::prelude::*;
 use super::i18n::tr;
 
 const REPO: &str = "MiguelLopesDel/Btrfs-Manager";
-const BRANCH: &str = "main";
-// Not on the real AUR yet (see docs/product-roadmap.md, Fase 10) — once it is,
-// this becomes something like "yay -Syu btrfs-manager-git".
-const UPDATE_COMMAND: &str = "bash scripts/pkg-install.sh";
+
+/// What the "Atualizar" button needs once a newer release has been found.
+pub(crate) struct PendingUpdate {
+    pub(crate) package_url: String,
+    pub(crate) package_name: String,
+    pub(crate) checksums_url: String,
+}
 
 pub(crate) struct UpdateBanner {
     pub(crate) revealer: gtk4::Revealer,
     label: gtk4::Label,
+    pub(crate) update_btn: gtk4::Button,
+    pub(crate) pending: Rc<RefCell<Option<PendingUpdate>>>,
 }
 
 pub(crate) fn build_update_banner() -> UpdateBanner {
@@ -32,14 +41,11 @@ pub(crate) fn build_update_banner() -> UpdateBanner {
         .wrap(true)
         .hexpand(true)
         .build();
-    let copy_btn = gtk4::Button::builder()
-        .label(tr("copy_update_command"))
+    let update_btn = gtk4::Button::builder()
+        .label(tr("update_now"))
         .css_classes(["suggested-action"])
         .valign(gtk4::Align::Center)
         .build();
-    copy_btn.connect_clicked(|btn| {
-        btn.display().clipboard().set_text(UPDATE_COMMAND);
-    });
     let dismiss_btn = gtk4::Button::builder()
         .label(tr("later"))
         .css_classes(["flat"])
@@ -55,7 +61,7 @@ pub(crate) fn build_update_banner() -> UpdateBanner {
         .margin_end(8)
         .build();
     banner.append(&label);
-    banner.append(&copy_btn);
+    banner.append(&update_btn);
     banner.append(&dismiss_btn);
     let frame = gtk4::Frame::builder().child(&banner).build();
 
@@ -70,7 +76,12 @@ pub(crate) fn build_update_banner() -> UpdateBanner {
         revealer_for_dismiss.set_reveal_child(false);
     });
 
-    UpdateBanner { revealer, label }
+    UpdateBanner {
+        revealer,
+        label,
+        update_btn,
+        pending: Rc::new(RefCell::new(None)),
+    }
 }
 
 /// Kicks off the (best-effort, silent-on-failure) update check in the
@@ -86,43 +97,77 @@ pub(crate) fn check_for_update(banner: &UpdateBanner) {
 
     let revealer = banner.revealer.clone();
     let label = banner.label.clone();
+    let pending = banner.pending.clone();
     let build_sha = build_sha.to_string();
     glib::MainContext::default().spawn_local(async move {
-        let Ok(Some(status)) = gio::spawn_blocking(move || fetch_status(&build_sha)).await else {
+        let Ok(Some((release, behind_by))) =
+            gio::spawn_blocking(move || fetch_release_and_status(&build_sha)).await
+        else {
             return;
         };
-        if status.behind_by == 0 {
+        if behind_by == 0 {
             return;
         }
+        let (Some(package), Some(checksums)) = (release.package_asset(), release.checksums_asset())
+        else {
+            // Release exists but doesn't have the assets we expect yet
+            // (e.g. the workflow is still running) — nothing to offer.
+            return;
+        };
+        *pending.borrow_mut() = Some(PendingUpdate {
+            package_url: package.download_url.clone(),
+            package_name: package.name.clone(),
+            checksums_url: checksums.download_url.clone(),
+        });
         label.set_text(&format!(
-            "Nova versão disponível ({} commit(s) à frente) — atualize com o comando abaixo",
-            status.behind_by
+            "Nova versão disponível ({behind_by} commit(s) à frente) — clique em Atualizar"
         ));
         revealer.set_reveal_child(true);
     });
 }
 
-/// Blocking: one HTTPS GET to GitHub's compare API. `None` on any failure
-/// (network, parse, rate limit) — deliberately swallowed, never surfaced to
-/// the user as an error.
-fn fetch_status(build_sha: &str) -> Option<UpdateStatus> {
-    let url = format!("https://api.github.com/repos/{REPO}/compare/{build_sha}...{BRANCH}");
-    // Verify TLS certs via the OS's own trust store (see Cargo.toml comment on
-    // the ureq dependency) rather than ureq's default bundled Mozilla list.
-    let agent = ureq::Agent::config_builder()
+/// Blocking: fetches the latest release, then how far behind it the running
+/// build is. `None` on any failure (network, parse, rate limit) —
+/// deliberately swallowed, never surfaced to the user as an error.
+fn fetch_release_and_status(build_sha: &str) -> Option<(LatestRelease, u32)> {
+    let agent = github_agent();
+    let release_url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let mut response = agent
+        .get(&release_url)
+        .header("User-Agent", "btrfs-manager-update-check")
+        .header("Accept", "application/vnd.github+json")
+        .call()
+        .ok()?;
+    let body = response.body_mut().read_to_string().ok()?;
+    let release = btrfs_manager_core::parse_latest_release(&body).ok()?;
+
+    let compare_url = format!(
+        "https://api.github.com/repos/{REPO}/compare/{build_sha}...{}",
+        release.tag_name
+    );
+    let mut response = agent
+        .get(&compare_url)
+        .header("User-Agent", "btrfs-manager-update-check")
+        .header("Accept", "application/vnd.github+json")
+        .call()
+        .ok()?;
+    let body = response.body_mut().read_to_string().ok()?;
+    let status = btrfs_manager_core::parse_compare_response(&body, &release.tag_name).ok()?;
+
+    Some((release, status.behind_by))
+}
+
+/// TLS verified via the OS's own trust store (see Cargo.toml comment on the
+/// ureq dependency) rather than ureq's default bundled Mozilla list. Shared
+/// with `update_apply.rs`, which downloads the actual package over the same
+/// kind of connection.
+pub(crate) fn github_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
         .tls_config(
             ureq::tls::TlsConfig::builder()
                 .root_certs(ureq::tls::RootCerts::PlatformVerifier)
                 .build(),
         )
         .build()
-        .new_agent();
-    let mut response = agent
-        .get(&url)
-        .header("User-Agent", "btrfs-manager-update-check")
-        .header("Accept", "application/vnd.github+json")
-        .call()
-        .ok()?;
-    let body = response.body_mut().read_to_string().ok()?;
-    btrfs_manager_core::parse_compare_response(&body, BRANCH).ok()
+        .new_agent()
 }

@@ -139,11 +139,7 @@ const TRANSLATIONS: &[(&str, &str, &str)] = &[
     ),
     ("cancel", "Cancel", "Cancelar"),
     ("later", "Later", "Depois"),
-    (
-        "copy_update_command",
-        "Copy update command",
-        "Copiar comando de atualização",
-    ),
+    ("update_now", "Update", "Atualizar"),
     ("delete_selected", "Delete selected", "Apagar selecionados"),
     (
         "create_snapshot",

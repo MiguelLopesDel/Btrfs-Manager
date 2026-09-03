@@ -15,6 +15,7 @@ mod mounts;
 mod notifications;
 mod row;
 mod state;
+mod update_apply;
 mod update_check;
 mod usage;
 mod widgets;
@@ -41,6 +42,7 @@ use inventory::render_inventory;
 use mounts::{managed_mount_roots_exist, unmount_session_mounts};
 use notifications::check_recent_policy_runs;
 use state::{SnapshotFilter, TimeRangeFilter, UiState, ViewMode};
+use update_apply::wire_update_banner;
 use update_check::{UpdateBanner, build_update_banner, check_for_update};
 use widgets::set_status_row;
 
@@ -104,6 +106,7 @@ fn build_ui(app: &libadwaita::Application) {
         &search,
         &filesystem_selector,
         &bulk_cancel_btn,
+        &update_banner,
     );
 
     let window = build_window(app, &toast_overlay, &ui_state);
@@ -154,6 +157,7 @@ fn build_ui_state(
 
 /// Wire every top-level signal handler: filter chips, header buttons, the
 /// multi-select toggle, and the filesystem selector/search box.
+#[allow(clippy::too_many_arguments)]
 fn wire_ui(
     ui_state: &UiState,
     controls: &HeaderControls,
@@ -162,6 +166,7 @@ fn wire_ui(
     search: &gtk4::SearchEntry,
     filesystem_selector: &gtk4::ComboBoxText,
     bulk_cancel_btn: &gtk4::Button,
+    update_banner: &UpdateBanner,
 ) {
     wire_filter_toggles(ui_state, filters, list, search);
     wire_header_actions(ui_state, controls, list, search, filesystem_selector);
@@ -174,6 +179,7 @@ fn wire_ui(
         bulk_cancel_btn,
     );
     wire_selector_and_search(ui_state, list, search, filesystem_selector);
+    wire_update_banner(ui_state, update_banner);
 }
 
 /// Filesystem selector + search entry, side by side above the filter chips.
